@@ -1,0 +1,72 @@
+{
+    "paths": {
+        "input_folder": "c:\\pinchus\\Sample pdfs\\Drrwaings samples",
+        "output_folder": "c:\\pinchus\\Sample pdfs\\edited samples"
+    },
+    "targets": [
+        "Pencill",
+        "HVAC return",
+        "HVAC Supply"
+    ],
+    "search": {
+        "search_rect_margin": 81.25,
+        "wall_max_dist": 96.87,
+        "min_wall_dist": 0.5,
+        "min_seg_len": 12.0
+    },
+    "graph": {
+        "graph_snap_dist": 20.0,
+        "snap_tolerance": 10.0
+    },
+    "walk": {
+        "max_steps": 150.0,
+        "min_coverage": 1.0,
+        "par_tolerance_deg": 20.0,
+        "perp_tolerance_deg": 20.0,
+        "deviation_margin": 80.0,
+        "only_straight": true
+    },
+    "debug": {
+        "show_walk_dots": true,
+        "dot_radius": 4.0,
+        "left_dot_color": [
+            1.0,
+            0.0,
+            0.0
+        ],
+        "right_dot_color": [
+            1.0,
+            0.5,
+            0.0
+        ]
+    },
+    "label": {
+        "font_size": 30.0,
+        "text_color": [
+            0.0,
+            0.0,
+            1.0
+        ],
+        "fill_color": [
+            1.0,
+            1.0,
+            1.0
+        ]
+    },
+    "grill_detection": {
+        "tolerance": 3.0,
+        "threshold": 0.7,
+        "grid_size": 15.27,
+        "tag_font_size": 30.17,
+        "tag_text_color": [
+            1.0,
+            0.0,
+            0.0
+        ],
+        "tag_fill_color": [
+            1.0,
+            1.0,
+            1.0
+        ]
+    }
+}
