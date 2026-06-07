@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Projects — Vector PDF Inspector</title>
+    <meta name="description" content="Manage your Vector PDF Inspector projects — view, create, and open drawing projects.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/home.css?v=10">
+    <script>
+        // Apply theme immediately to prevent flash
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            } else if (theme === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            } else {
+                if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                }
+            }
+        }
+        try {
+            const cachedTheme = localStorage.getItem('app_theme');
+            if (cachedTheme) applyTheme(cachedTheme);
+        } catch (e) {}
+    </script>
+</head>
+<body>
+    <div class="bg-mesh"></div>
+    <div class="bg-grid"></div>
+
+    <!-- Navigation -->
+    <nav class="app-nav">
+        <a href="/home" class="nav-logo">
+            <div class="nav-logo-icon">📐</div>
+            <span class="nav-logo-text">Vector PDF Inspector</span>
+        </a>
+
+        <div class="nav-user">
+            <div class="avatar" id="nav-avatar" title="{{ current_user }}">{{ current_user[0].upper() }}</div>
+            <span id="nav-username">{{ current_user }}</span>
+        </div>
+        
+        <button class="btn-logout" id="btn-settings" style="margin-right: -8px;">
+            <span>⚙️</span> Settings
+        </button>
+
+        <a href="/logout" class="btn-logout" id="btn-logout">
+            <span>↩</span> Sign out
+        </a>
+    </nav>
+
+    <!-- Main -->
+    <main class="home-main">
+
+        <!-- Stats row -->
+        <div class="stats-row" id="stats-row">
+            <div class="stat-card" style="--stat-color: #60a5fa;">
+                <div class="stat-icon">📁</div>
+                <div class="stat-value" id="stat-projects">—</div>
+                <div class="stat-label">Total Projects</div>
+            </div>
+            <div class="stat-card" style="--stat-color: #a78bfa;">
+                <div class="stat-icon">📄</div>
+                <div class="stat-value" id="stat-pdfs">—</div>
+                <div class="stat-label">Total PDF</div>
+            </div>
+            <div class="stat-card" style="--stat-color: #34d399;">
+                <div class="stat-icon">🕒</div>
+                <div class="stat-value" id="stat-recent">—</div>
+                <div class="stat-label">Most Recent</div>
+            </div>
+        </div>
+
+        <!-- Projects table section -->
+        <div class="section-header">
+            <h2 class="section-title">All Projects</h2>
+            <div class="section-actions">
+                <div class="search-box">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="search-input" placeholder="Search projects…" autocomplete="off">
+                </div>
+                <button class="btn-primary" id="btn-new-project">
+                    <span>＋</span> New Project
+                </button>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table class="projects-table" id="projects-table">
+                <thead>
+                    <tr>
+                        <th data-col="name" id="th-name">
+                            Project <em class="sort-icon">↕</em>
+                        </th>
+                        <th data-col="created" id="th-created">
+                            Date Created <em class="sort-icon">↕</em>
+                        </th>
+                        <th data-col="modified" id="th-modified">
+                            Last Modified <em class="sort-icon">↕</em>
+                        </th>
+                        <th data-col="pdfs" id="th-pdfs">
+                            PDF <em class="sort-icon">↕</em>
+                        </th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="projects-tbody">
+                    <!-- Rows injected by JS -->
+                </tbody>
+            </table>
+
+            <!-- Empty state (shown by JS) -->
+            <div class="empty-state" id="empty-state" style="display:none;">
+                <div class="empty-icon">📂</div>
+                <h3>No projects yet</h3>
+                <p>Create your first project to get started.</p>
+            </div>
+
+            <!-- Loading state -->
+            <div class="empty-state" id="loading-state">
+                <div class="loading-spinner"></div>
+                <h3>Loading projects…</h3>
+            </div>
+        </div>
+    </main>
+
+    <!-- Create Project Modal -->
+    <div class="modal-backdrop" id="create-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h3 id="modal-title">Create New Project</h3>
+                <button class="modal-close" id="modal-close-btn" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="new-project-name">Project Name</label>
+                    <input
+                        type="text"
+                        id="new-project-name"
+                        placeholder="e.g., Building A — Mechanical"
+                        autocomplete="off"
+                        maxlength="80"
+                    >
+                </div>
+                <div class="form-group" style="margin-top: 15px;">
+                    <label for="new-project-address">Project Address</label>
+                    <input
+                        type="text"
+                        id="new-project-address"
+                        placeholder="e.g., 123 Main St, New York, NY"
+                        autocomplete="off"
+                        maxlength="150"
+                    >
+                </div>
+                <div class="modal-error" id="modal-error"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="modal-cancel-btn">Cancel</button>
+                <button class="btn-primary" id="modal-create-btn">
+                    <span>＋</span> Create Project
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Project Modal -->
+    <div class="modal-backdrop" id="edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-modal-title">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h3 id="edit-modal-title">Edit Project</h3>
+                <button class="modal-close" id="edit-close-btn" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="edit-project-name">Project Name</label>
+                    <input
+                        type="text"
+                        id="edit-project-name"
+                        placeholder="e.g., Building A — Mechanical"
+                        autocomplete="off"
+                        maxlength="80"
+                    >
+                </div>
+                <div class="form-group" style="margin-top: 15px;">
+                    <label for="edit-project-address">Project Address</label>
+                    <input
+                        type="text"
+                        id="edit-project-address"
+                        placeholder="e.g., 123 Main St, New York, NY"
+                        autocomplete="off"
+                        maxlength="150"
+                    >
+                </div>
+                <div class="modal-error" id="edit-modal-error"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="edit-cancel-btn">Cancel</button>
+                <button class="btn-primary" id="edit-save-btn">
+                    Save Changes
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div class="modal-backdrop" id="delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-modal-title">
+        <div class="confirm-dialog">
+            <div class="modal-header">
+                <h3 id="delete-modal-title" style="color:#f87171;">Delete Project</h3>
+                <button class="modal-close" id="delete-close-btn" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <p style="font-size:0.9rem; color: var(--text-secondary); line-height:1.6;">
+                    Are you sure you want to delete <strong id="delete-project-name" style="color:var(--text-primary);"></strong>?
+                    This will permanently remove the project folder and all its PDF.
+                </p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="delete-cancel-btn">Cancel</button>
+                <button class="btn-primary" id="delete-confirm-btn" style="background:linear-gradient(135deg,#ef4444,#dc2626); box-shadow:0 4px 14px rgba(239,68,68,0.3);">
+                    Delete
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-backdrop" id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+        <div class="modal-box">
+            <div class="modal-header">
+                <h3 id="settings-modal-title">Settings</h3>
+                <button class="modal-close" id="settings-close-btn" aria-label="Close">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="theme-select">Theme</label>
+                    <select id="theme-select" style="width: 100%; background: var(--modal-input-bg); border: 1px solid var(--modal-input-border); color: var(--text-primary); padding: 10px 14px; border-radius: var(--radius-sm); font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none;">
+                        <option value="auto" style="background: var(--modal-bg); color: var(--text-primary);">Auto (OS Default)</option>
+                        <option value="dark" style="background: var(--modal-bg); color: var(--text-primary);">Dark Mode</option>
+                        <option value="light" style="background: var(--modal-bg); color: var(--text-primary);">Light Mode</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-cancel" id="settings-cancel-btn">Close</button>
+                <button class="btn-primary" id="settings-save-btn">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <style>
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+
+    <script>
+    (() => {
+        // ─── State ───────────────────────────────────────────────────────
+        let allProjects = [];
+        let sortCol = 'modified';
+        let sortDir = -1; // 1 asc, -1 desc
+        let deleteTarget = null;
+
+        // ─── DOM refs ────────────────────────────────────────────────────
+        const tbody       = document.getElementById('projects-tbody');
+        const emptyState  = document.getElementById('empty-state');
+        const loadingState= document.getElementById('loading-state');
+        const searchInput = document.getElementById('search-input');
+        const statProjects= document.getElementById('stat-projects');
+        const statPdfs    = document.getElementById('stat-pdfs');
+        const statRecent  = document.getElementById('stat-recent');
+
+        // Create modal
+        const createModal = document.getElementById('create-modal');
+        const newNameInput= document.getElementById('new-project-name');
+        const modalError  = document.getElementById('modal-error');
+        const createBtn   = document.getElementById('modal-create-btn');
+
+        // Delete modal
+        const deleteModal = document.getElementById('delete-modal');
+        const delNameSpan = document.getElementById('delete-project-name');
+        const delConfirmBtn=document.getElementById('delete-confirm-btn');
+
+        // Toast
+        const toastEl    = document.getElementById('toast');
+        let toastTimer;
+
+        // ─── Utilities ───────────────────────────────────────────────────
+        function showToast(msg, type = 'success') {
+            clearTimeout(toastTimer);
+            toastEl.textContent = (type === 'success' ? '✓ ' : '✗ ') + msg;
+            toastEl.className = `toast ${type}`;
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => toastEl.classList.add('show'));
+            });
+            toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3200);
+        }
+
+        function openModal(modal) {
+            modal.classList.add('open');
+            const first = modal.querySelector('input');
+            if (first) setTimeout(() => first.focus(), 120);
+        }
+
+        function closeModal(modal) {
+            modal.classList.remove('open');
+        }
+
+        // ─── Project colours (deterministic from name) ───────────────────
+        const PALETTE = [
+            ['#1d4ed8','#3b82f6'], ['#7c3aed','#a855f7'],
+            ['#0e7490','#06b6d4'], ['#047857','#10b981'],
+            ['#b45309','#f59e0b'], ['#be185d','#ec4899'],
+        ];
+
+        function projectColor(name) {
+            let h = 0;
+            for (const c of name) h = (h * 31 + c.charCodeAt(0)) & 0xffffffff;
+            const [bg, fg] = PALETTE[Math.abs(h) % PALETTE.length];
+            return { bg, fg };
+        }
+
+        function projectInitials(name) {
+            return name.split(/\s+/).slice(0, 2).map(w => w[0] || '').join('').toUpperCase() || '?';
+        }
+
+        // ─── Format date ─────────────────────────────────────────────────
+        function fmtDate(iso) {
+            if (!iso) return '—';
+            const d = new Date(iso);
+            if (isNaN(d)) return '—';
+            const now = new Date();
+            const diffMs = now - d;
+            const diffMin = diffMs / 60000;
+            if (diffMin < 2)   return 'Just now';
+            if (diffMin < 60)  return `${Math.round(diffMin)}m ago`;
+            if (diffMin < 1440)return `${Math.round(diffMin/60)}h ago`;
+            if (diffMin < 10080)return `${Math.round(diffMin/1440)}d ago`;
+            return d.toLocaleDateString(undefined, {month:'short', day:'numeric', year:'numeric'});
+        }
+
+        // ─── Render table ─────────────────────────────────────────────────
+        function renderTable() {
+            const q = searchInput.value.trim().toLowerCase();
+            const filtered = allProjects.filter(p =>
+                p.name.toLowerCase().includes(q) ||
+                (p.address && p.address.toLowerCase().includes(q))
+            );
+
+            filtered.sort((a, b) => {
+                let va, vb;
+                if (sortCol === 'name')      { va = a.name.toLowerCase(); vb = b.name.toLowerCase(); }
+                else if (sortCol === 'created'){ va = a.created || ''; vb = b.created || ''; }
+                else if (sortCol === 'pdfs')   { va = a.pdf_count; vb = b.pdf_count; }
+                else                           { va = a.modified || ''; vb = b.modified || ''; }
+                return va < vb ? -sortDir : va > vb ? sortDir : 0;
+            });
+
+            loadingState.style.display = 'none';
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = '';
+                emptyState.style.display = 'block';
+                return;
+            }
+            emptyState.style.display = 'none';
+
+                tbody.innerHTML = filtered.map((p, i) => {
+                const { bg, fg } = projectColor(p.name);
+                const initials = projectInitials(p.name);
+                const pdfBadgeClass = p.pdf_count > 0 ? 'badge-blue' : 'badge-gray';
+                const url = `/?project=${encodeURIComponent(p.name)}`;
+                return `
+                <tr style="animation-delay:${i * 35}ms; cursor:pointer;" onclick="rowClick(event, '${url}')">
+                    <td>
+                        <div class="project-name-cell">
+                            <div class="project-avatar" style="background:${bg}20; color:${fg}; border: 1px solid ${bg}40;">
+                                ${initials}
+                            </div>
+                            <div>
+                                <div class="project-name-text">${escHtml(p.name)}</div>
+                                ${p.address ? `<div class="project-path-text" style="opacity: 0.85;">${escHtml(p.address)}</div>` : ''}
+                            </div>
+                        </div>
+                    </td>
+                    <td style="color:var(--text-secondary); font-size:0.85rem;">${fmtDate(p.created)}</td>
+                    <td style="color:var(--text-secondary); font-size:0.85rem;">${fmtDate(p.modified)}</td>
+                    <td>
+                        <span class="badge ${pdfBadgeClass}">
+                            ${p.pdf_count} PDF
+                        </span>
+                    </td>
+                    <td onclick="event.stopPropagation()" style="width:48px; text-align:center; position:relative;">
+                        <div class="project-menu-container">
+                            <button class="btn-menu-trigger" onclick="toggleProjectMenu(event, '${escHtml(p.name)}')">⋮</button>
+                            <div class="project-dropdown-menu" id="menu-${escHtml(p.name)}">
+                                <button onclick="triggerEdit('${escHtml(p.name)}', '${escHtml(p.address || '')}')">✏️ Rename / Edit</button>
+                                <button class="delete-opt" onclick="triggerDeleteInline('${escHtml(p.name)}')">🗑 Delete</button>
+                            </div>
+                        </div>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        function escHtml(s) {
+            return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        }
+
+        // ─── Three-dot Menu and Rename / Edit Logic ───────────────────────
+        let activeMenu = null;
+
+        window.toggleProjectMenu = function(e, name) {
+            e.stopPropagation();
+            const menuId = `menu-${name}`;
+            const menu = document.getElementById(menuId);
+            
+            // Close any other open menu
+            if (activeMenu && activeMenu !== menu) {
+                const prevRow = activeMenu.closest('tr');
+                if (prevRow) {
+                    prevRow.style.position = '';
+                    prevRow.style.zIndex = '';
+                }
+                activeMenu.classList.remove('show');
+            }
+            
+            if (menu) {
+                menu.classList.toggle('show');
+                const row = menu.closest('tr');
+                if (menu.classList.contains('show')) {
+                    activeMenu = menu;
+                    if (row) {
+                        row.style.position = 'relative';
+                        row.style.zIndex = '999';
+                    }
+                } else {
+                    activeMenu = null;
+                    if (row) {
+                        row.style.position = '';
+                        row.style.zIndex = '';
+                    }
+                }
+            }
+        };
+
+        // Close dropdown when clicking anywhere else
+        document.addEventListener('click', () => {
+            if (activeMenu) {
+                const prevRow = activeMenu.closest('tr');
+                if (prevRow) {
+                    prevRow.style.position = '';
+                    prevRow.style.zIndex = '';
+                }
+                activeMenu.classList.remove('show');
+                activeMenu = null;
+            }
+        });
+
+        window.triggerDeleteInline = function(name) {
+            if (activeMenu) {
+                const prevRow = activeMenu.closest('tr');
+                if (prevRow) {
+                    prevRow.style.position = '';
+                    prevRow.style.zIndex = '';
+                }
+                activeMenu.classList.remove('show');
+                activeMenu = null;
+            }
+            deleteTarget = name;
+            delNameSpan.textContent = '"' + name + '"';
+            openModal(deleteModal);
+        };
+
+        const editModal = document.getElementById('edit-modal');
+        const editNameInput = document.getElementById('edit-project-name');
+        const editAddressInput = document.getElementById('edit-project-address');
+        const editModalError = document.getElementById('edit-modal-error');
+        const editSaveBtn = document.getElementById('edit-save-btn');
+        let editTarget = null;
+
+        window.triggerEdit = function(name, address) {
+            if (activeMenu) {
+                const prevRow = activeMenu.closest('tr');
+                if (prevRow) {
+                    prevRow.style.position = '';
+                    prevRow.style.zIndex = '';
+                }
+                activeMenu.classList.remove('show');
+                activeMenu = null;
+            }
+            editTarget = name;
+            editNameInput.value = name;
+            editAddressInput.value = address;
+            editModalError.classList.remove('show');
+            openModal(editModal);
+        };
+
+        function closeEdit() {
+            closeModal(editModal);
+            editTarget = null;
+        }
+
+        document.getElementById('edit-close-btn').addEventListener('click', closeEdit);
+        document.getElementById('edit-cancel-btn').addEventListener('click', closeEdit);
+        editModal.addEventListener('click', e => { if (e.target === editModal) closeEdit(); });
+
+        editNameInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') editSaveBtn.click();
+        });
+        editAddressInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') editSaveBtn.click();
+        });
+
+        editSaveBtn.addEventListener('click', async () => {
+            const name = editNameInput.value.trim();
+            const address = editAddressInput.value.trim();
+            if (!name) {
+                editModalError.textContent = 'Please enter a project name.';
+                editModalError.classList.add('show');
+                editNameInput.focus();
+                return;
+            }
+            editModalError.classList.remove('show');
+            editSaveBtn.disabled = true;
+            editSaveBtn.textContent = 'Saving…';
+
+            try {
+                const res = await fetch(`/api/projects/${encodeURIComponent(editTarget)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, address })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to update project');
+
+                closeEdit();
+                showToast(`Project updated successfully.`);
+                await loadProjects();
+            } catch(e) {
+                editModalError.textContent = e.message;
+                editModalError.classList.add('show');
+            } finally {
+                editSaveBtn.disabled = false;
+                editSaveBtn.textContent = 'Save Changes';
+            }
+        });
+
+        // Row click navigation (skip if delete button)
+        window.rowClick = function(e, url) {
+            window.location.href = url;
+        };
+
+        // ─── Load projects ────────────────────────────────────────────────
+        async function loadProjects() {
+            loadingState.style.display = 'block';
+            emptyState.style.display = 'none';
+            tbody.innerHTML = '';
+
+            try {
+                const res = await fetch('/api/projects');
+                const projects = await res.json();
+                if (!Array.isArray(projects)) throw new Error('Bad response');
+
+                // Load PDF counts in parallel
+                const withCounts = await Promise.all(projects.map(async p => {
+                    try {
+                        const r2 = await fetch(`/api/projects/${encodeURIComponent(p.name)}/pdfs`);
+                        const pdfs = await r2.json();
+                        return { ...p, pdf_count: Array.isArray(pdfs) ? pdfs.length : 0 };
+                    } catch {
+                        return { ...p, pdf_count: 0 };
+                    }
+                }));
+
+                allProjects = withCounts;
+
+                // Update stats
+                const totalPdfs = allProjects.reduce((s, p) => s + p.pdf_count, 0);
+                statProjects.textContent = allProjects.length;
+                statPdfs.textContent = totalPdfs;
+
+                // Most recent
+                let mostRecentProj = null;
+                for (const p of allProjects) {
+                    if (!p.modified) continue;
+                    if (!mostRecentProj || new Date(p.modified) > new Date(mostRecentProj.modified)) {
+                        mostRecentProj = p;
+                    }
+                }
+                statRecent.textContent = mostRecentProj
+                    ? mostRecentProj.name.split(' ')[0]
+                    : '—';
+
+                renderTable();
+            } catch(e) {
+                loadingState.style.display = 'none';
+                emptyState.style.display = 'block';
+                showToast('Failed to load projects.', 'error');
+            }
+        }
+
+        // ─── Sort headers ─────────────────────────────────────────────────
+        document.querySelectorAll('.projects-table thead th[data-col]').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.dataset.col;
+                if (sortCol === col) sortDir *= -1;
+                else { sortCol = col; sortDir = 1; }
+
+                document.querySelectorAll('.projects-table thead th').forEach(h => {
+                    h.classList.remove('sorted');
+                    const icon = h.querySelector('.sort-icon');
+                    if (icon) icon.textContent = '↕';
+                });
+                th.classList.add('sorted');
+                const icon = th.querySelector('.sort-icon');
+                if (icon) icon.textContent = sortDir === 1 ? '↑' : '↓';
+
+                renderTable();
+            });
+        });
+
+        // ─── Search ───────────────────────────────────────────────────────
+        searchInput.addEventListener('input', renderTable);
+
+        // ─── Create modal ─────────────────────────────────────────────────
+        const newAddressInput = document.getElementById('new-project-address');
+
+        document.getElementById('btn-new-project').addEventListener('click', () => {
+            newNameInput.value = '';
+            newAddressInput.value = '';
+            modalError.classList.remove('show');
+            openModal(createModal);
+        });
+
+        function closeCreate() { closeModal(createModal); }
+        document.getElementById('modal-close-btn').addEventListener('click', closeCreate);
+        document.getElementById('modal-cancel-btn').addEventListener('click', closeCreate);
+
+        createModal.addEventListener('click', e => { if (e.target === createModal) closeCreate(); });
+
+        newNameInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') createBtn.click();
+        });
+        newAddressInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') createBtn.click();
+        });
+
+        createBtn.addEventListener('click', async () => {
+            const name = newNameInput.value.trim();
+            const address = newAddressInput.value.trim();
+            if (!name) {
+                modalError.textContent = 'Please enter a project name.';
+                modalError.classList.add('show');
+                newNameInput.focus();
+                return;
+            }
+            modalError.classList.remove('show');
+            createBtn.disabled = true;
+            createBtn.textContent = 'Creating…';
+
+            try {
+                const res = await fetch('/api/projects', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, address })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to create project');
+
+                closeCreate();
+                showToast(`Project "${data.name}" created successfully.`);
+                await loadProjects();
+            } catch(e) {
+                modalError.textContent = e.message;
+                modalError.classList.add('show');
+            } finally {
+                createBtn.disabled = false;
+                createBtn.innerHTML = '<span>＋</span> Create Project';
+            }
+        });
+
+        // ─── Delete modal ─────────────────────────────────────────────────
+        function closeDelete() { closeModal(deleteModal); deleteTarget = null; }
+        document.getElementById('delete-close-btn').addEventListener('click', closeDelete);
+        document.getElementById('delete-cancel-btn').addEventListener('click', closeDelete);
+        deleteModal.addEventListener('click', e => { if (e.target === deleteModal) closeDelete(); });
+
+        delConfirmBtn.addEventListener('click', async () => {
+            if (!deleteTarget) return;
+            delConfirmBtn.disabled = true;
+            delConfirmBtn.textContent = 'Deleting…';
+
+            try {
+                const res = await fetch(`/api/projects/${encodeURIComponent(deleteTarget)}`, {
+                    method: 'DELETE'
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to delete project');
+
+                closeDelete();
+                showToast(`Project deleted successfully.`);
+                await loadProjects();
+            } catch(e) {
+                showToast(e.message, 'error');
+                closeDelete();
+            } finally {
+                delConfirmBtn.disabled = false;
+                delConfirmBtn.textContent = 'Delete';
+            }
+        });
+
+        // ─── Settings modal ───────────────────────────────────────────────
+        const settingsModal = document.getElementById('settings-modal');
+        const themeSelect = document.getElementById('theme-select');
+        const btnSettings = document.getElementById('btn-settings');
+        const settingsSaveBtn = document.getElementById('settings-save-btn');
+
+        function closeSettings() { closeModal(settingsModal); }
+        document.getElementById('settings-close-btn').addEventListener('click', closeSettings);
+        document.getElementById('settings-cancel-btn').addEventListener('click', closeSettings);
+        settingsModal.addEventListener('click', e => { if (e.target === settingsModal) closeSettings(); });
+
+        btnSettings.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/config');
+                const data = await res.json();
+                if (data.theme) {
+                    themeSelect.value = data.theme;
+                    localStorage.setItem('app_theme', data.theme);
+                }
+            } catch (e) {}
+            openModal(settingsModal);
+        });
+
+        settingsSaveBtn.addEventListener('click', async () => {
+            const newTheme = themeSelect.value;
+            settingsSaveBtn.disabled = true;
+            settingsSaveBtn.textContent = 'Saving...';
+            try {
+                const res = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ theme: newTheme })
+                });
+                if (res.ok) {
+                    localStorage.setItem('app_theme', newTheme);
+                    applyTheme(newTheme);
+                    showToast('Settings saved');
+                    closeSettings();
+                }
+            } catch (e) {
+                showToast('Failed to save settings', 'error');
+            } finally {
+                settingsSaveBtn.disabled = false;
+                settingsSaveBtn.textContent = 'Save';
+            }
+        });
+
+        async function fetchInitialTheme() {
+            try {
+                const res = await fetch('/api/config');
+                const data = await res.json();
+                if (data.theme) {
+                    localStorage.setItem('app_theme', data.theme);
+                    applyTheme(data.theme);
+                }
+            } catch (e) {}
+        }
+        
+        // Listen for OS theme changes if auto
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+            const currentTheme = localStorage.getItem('app_theme') || 'auto';
+            if (currentTheme === 'auto') {
+                applyTheme('auto');
+            }
+        });
+
+        // Close modals on Escape key press
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (createModal && createModal.classList.contains('open')) closeCreate();
+                if (editModal && editModal.classList.contains('open')) closeEdit();
+                if (deleteModal && deleteModal.classList.contains('open')) closeDelete();
+                if (settingsModal && settingsModal.classList.contains('open')) closeSettings();
+            }
+        });
+
+        // ─── Init ─────────────────────────────────────────────────────────
+        const initHeader = document.querySelector(`.projects-table thead th[data-col="${sortCol}"]`);
+        if (initHeader) {
+            initHeader.classList.add('sorted');
+            const icon = initHeader.querySelector('.sort-icon');
+            if (icon) icon.textContent = sortDir === 1 ? '↑' : '↓';
+        }
+        fetchInitialTheme();
+        loadProjects();
+    })();
+    </script>
+</body>
+</html>

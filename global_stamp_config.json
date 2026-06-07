@@ -1,0 +1,21 @@
+{
+    "uploadedStamps": [
+        "MICHAEL JOSEPH ROBERT pemichaelrengineercom"
+    ],
+    "rules": [
+        {
+            "type": "shape",
+            "field": "Type",
+            "operator": "==",
+            "value": "Air Outlet",
+            "result": "MICHAEL JOSEPH ROBERT pemichaelrengineercom"
+        },
+        {
+            "type": "color",
+            "field": "Pattern",
+            "operator": "==",
+            "value": "AC 1",
+            "result": "#3d89b8"
+        }
+    ]
+}

@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create Account — Vector PDF Inspector</title>
+    <meta name="description" content="Create a new account to access the Vector PDF Inspector workspace.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/login.css">
+    <style>
+        .strength-bar-track {
+            height: 4px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 4px;
+            margin-top: 8px;
+            overflow: hidden;
+        }
+        .strength-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            width: 0%;
+            transition: width 0.3s, background 0.3s;
+        }
+        .strength-label {
+            font-size: 0.75rem;
+            margin-top: 5px;
+            color: var(--text-secondary);
+            height: 14px;
+        }
+        .password-toggle {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 15px;
+            padding: 0;
+            transition: color 0.2s;
+        }
+        .password-toggle:hover { color: var(--text-primary); }
+        .success-banner {
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            padding: 24px 0 8px;
+            text-align: center;
+        }
+        .success-banner .check-icon {
+            font-size: 48px;
+            animation: pop-in 0.4s cubic-bezier(0.16,1,0.3,1);
+        }
+        @keyframes pop-in {
+            from { transform: scale(0.4); opacity: 0; }
+            to   { transform: scale(1);   opacity: 1; }
+        }
+        .success-banner h3 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 1.2rem;
+        }
+        .success-banner p {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        .back-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            transition: color 0.2s;
+            margin-bottom: 4px;
+        }
+        .back-link:hover { color: var(--text-primary); }
+    </style>
+</head>
+<body>
+    <!-- Animated background -->
+    <div class="bg-mesh"></div>
+    <div class="bg-grid"></div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+
+    <div class="login-wrapper">
+        <!-- Logo -->
+        <div class="login-logo">
+            <div class="logo-icon">📐</div>
+            <h1>Vector PDF Inspector</h1>
+            <p>Create your workspace account</p>
+        </div>
+
+        <!-- Card -->
+        <div class="login-card">
+            <!-- Success banner (shown after creation) -->
+            <div class="success-banner" id="success-banner">
+                <div class="check-icon">✅</div>
+                <h3>Account Created!</h3>
+                <p>Your account has been created successfully.<br>Redirecting to sign in…</p>
+            </div>
+
+            <!-- Form -->
+            <div id="form-area">
+                <p class="card-title">Create Account</p>
+
+                <div class="error-alert" id="register-error" role="alert">
+                    <span>⚠</span>
+                    <span id="error-text">
+                        {% if error %}{{ error }}{% endif %}
+                    </span>
+                </div>
+                {% if error %}
+                <script>document.getElementById('register-error').classList.add('visible');</script>
+                {% endif %}
+
+                <form id="register-form" method="POST" action="/register" novalidate>
+                    <!-- Username -->
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <div class="input-wrapper">
+                            <input
+                                type="text"
+                                id="username"
+                                name="username"
+                                placeholder="Choose a username"
+                                autocomplete="username"
+                                autocorrect="off"
+                                autocapitalize="none"
+                                spellcheck="false"
+                                value="{{ username or '' }}"
+                                minlength="3"
+                                maxlength="32"
+                                required
+                            >
+                            <span class="input-icon">👤</span>
+                        </div>
+                    </div>
+
+                    <!-- Password -->
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <div class="input-wrapper">
+                            <input
+                                type="password"
+                                id="password"
+                                name="password"
+                                placeholder="Choose a strong password"
+                                autocomplete="new-password"
+                                minlength="6"
+                                required
+                            >
+                            <span class="input-icon">🔑</span>
+                            <button type="button" class="password-toggle" id="toggle-pw" aria-label="Show password">👁</button>
+                        </div>
+                        <div class="strength-bar-track">
+                            <div class="strength-bar-fill" id="strength-fill"></div>
+                        </div>
+                        <div class="strength-label" id="strength-label"></div>
+                    </div>
+
+                    <!-- Confirm Password -->
+                    <div class="form-group" style="margin-bottom: 28px;">
+                        <label for="confirm-password">Confirm Password</label>
+                        <div class="input-wrapper">
+                            <input
+                                type="password"
+                                id="confirm-password"
+                                name="confirm_password"
+                                placeholder="Re-enter your password"
+                                autocomplete="new-password"
+                                required
+                            >
+                            <span class="input-icon">🔒</span>
+                            <button type="button" class="password-toggle" id="toggle-confirm" aria-label="Show password">👁</button>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn-login" id="btn-submit">
+                        <span class="btn-text">Create Account</span>
+                        <span class="btn-spinner">
+                            <span class="spinner-ring"></span>
+                        </span>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <a href="/login" class="back-link">← Back to Sign In</a>
+    </div>
+
+    <script>
+    (() => {
+        const form        = document.getElementById('register-form');
+        const btn         = document.getElementById('btn-submit');
+        const errEl       = document.getElementById('register-error');
+        const errText     = document.getElementById('error-text');
+        const pwInput     = document.getElementById('password');
+        const confirmPw   = document.getElementById('confirm-password');
+        const fill        = document.getElementById('strength-fill');
+        const label       = document.getElementById('strength-label');
+        const togglePw    = document.getElementById('toggle-pw');
+        const toggleConf  = document.getElementById('toggle-confirm');
+
+        // ── Password toggle ──────────────────────────────────────────────
+        function makeToggle(btn, input) {
+            btn.addEventListener('click', () => {
+                const show = input.type === 'password';
+                input.type = show ? 'text' : 'password';
+                btn.textContent = show ? '🙈' : '👁';
+            });
+        }
+        makeToggle(togglePw, pwInput);
+        makeToggle(toggleConf, confirmPw);
+
+        // ── Password strength ────────────────────────────────────────────
+        function calcStrength(pw) {
+            if (!pw) return 0;
+            let score = 0;
+            if (pw.length >= 8)  score++;
+            if (pw.length >= 12) score++;
+            if (/[A-Z]/.test(pw)) score++;
+            if (/[0-9]/.test(pw)) score++;
+            if (/[^A-Za-z0-9]/.test(pw)) score++;
+            return score;
+        }
+
+        const LEVELS = [
+            { pct: 20,  color: '#ef4444', text: 'Very weak'  },
+            { pct: 40,  color: '#f97316', text: 'Weak'       },
+            { pct: 60,  color: '#eab308', text: 'Fair'       },
+            { pct: 80,  color: '#22c55e', text: 'Strong'     },
+            { pct: 100, color: '#10b981', text: 'Very strong'},
+        ];
+
+        pwInput.addEventListener('input', () => {
+            const s = calcStrength(pwInput.value);
+            if (!pwInput.value) {
+                fill.style.width = '0%';
+                label.textContent = '';
+                return;
+            }
+            const lvl = LEVELS[Math.min(s, LEVELS.length) - 1] || LEVELS[0];
+            fill.style.width  = lvl.pct + '%';
+            fill.style.background = lvl.color;
+            label.textContent = lvl.text;
+            label.style.color = lvl.color;
+        });
+
+        // ── Confirm match highlight ──────────────────────────────────────
+        confirmPw.addEventListener('input', () => {
+            if (!confirmPw.value) {
+                confirmPw.style.borderColor = '';
+                return;
+            }
+            const match = confirmPw.value === pwInput.value;
+            confirmPw.style.borderColor = match ? '#10b981' : '#ef4444';
+            confirmPw.style.boxShadow   = match
+                ? '0 0 0 3px rgba(16,185,129,0.15)'
+                : '0 0 0 3px rgba(239,68,68,0.15)';
+        });
+
+        // ── Show error ───────────────────────────────────────────────────
+        function showError(msg) {
+            errText.textContent = msg;
+            errEl.classList.add('visible');
+        }
+
+        function clearError() { errEl.classList.remove('visible'); }
+
+        // ── Submit ───────────────────────────────────────────────────────
+        form.addEventListener('submit', function(e) {
+            clearError();
+            const u  = document.getElementById('username').value.trim();
+            const pw = pwInput.value;
+            const cp = confirmPw.value;
+
+            if (!u || !pw || !cp) { e.preventDefault(); showError('Please fill in all fields.'); return; }
+            if (u.length < 3)     { e.preventDefault(); showError('Username must be at least 3 characters.'); return; }
+            if (pw.length < 6)    { e.preventDefault(); showError('Password must be at least 6 characters.'); return; }
+            if (pw !== cp)        { e.preventDefault(); showError('Passwords do not match.'); return; }
+
+            btn.classList.add('loading');
+        });
+
+        // ── Auto focus ───────────────────────────────────────────────────
+        window.addEventListener('DOMContentLoaded', () => {
+            const u = document.getElementById('username');
+            if (!u.value) u.focus();
+        });
+
+        // ── Handle server success redirect (check URL param) ─────────────
+        if (new URLSearchParams(window.location.search).get('created') === '1') {
+            document.getElementById('form-area').style.display = 'none';
+            const banner = document.getElementById('success-banner');
+            banner.style.display = 'flex';
+            setTimeout(() => { window.location.href = '/login?registered=1'; }, 2200);
+        }
+    })();
+    </script>
+</body>
+</html>

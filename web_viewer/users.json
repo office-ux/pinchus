@@ -1,0 +1,22 @@
+[
+  {
+    "username": "admin",
+    "password_hash": "$2b$12$Uj1G8wUX8m.oMZepXlXV/eRVHzucU.mjzWobRlowbG5Ylqsumaq2a"
+  },
+  {
+    "username": "Davidsalcer",
+    "password_hash": "$2b$12$iYvi2xrQaBv7VeDvmFV.v.uvYDsjR05ZfVQ/BphIPwXNhwI/2Ii6K"
+  },
+  {
+    "username": "dsalcer",
+    "password_hash": "$2b$12$cWxDR8L9mXLlLmKmY.2Z4OayPcWce07kyaowcbNfB6QbTNNep2G4C"
+  },
+  {
+    "username": "test",
+    "password_hash": "$2b$12$X9wgmlk.dhgfgsUlVsw0Du9k/Gq9dm45m830cfNLxUGDl9KiTuxpK"
+  },
+  {
+    "username": "pinchussalcer",
+    "password_hash": "$2b$12$1pa3KG/Icq2P7UAydYKqnubw8eZIZwqX/x2qURE2j0QXbwiFNFWI6"
+  }
+]

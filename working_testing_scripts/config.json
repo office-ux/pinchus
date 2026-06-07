@@ -1,0 +1,39 @@
+{
+    "theme": "auto",
+    "paths": {
+        "input_folder": "c:\\pinchus\\Sample pdfs\\Drrwaings samples",
+        "output_folder": "c:\\pinchus\\Sample pdfs\\edited samples"
+    },
+    "targets": [
+        "grill",
+        "grill 1",
+        "grill 2",
+        "grill 3",
+        "grill 4",
+        "grill 5",
+        "grill 6",
+        "grill 7",
+        "grill 8"
+    ],
+    "line_scan": {
+        "length_tolerance": 0.1,
+        "line_weight_tolerance": 0.1,
+        "color_tolerance": 0.01,
+        "output_line_width": 4.0
+    },
+    "pattern_detection": {
+        "length_tolerance": 0.2,
+        "position_tolerance": 1.0,
+        "line_weight_tolerance": 0.1,
+        "color_tolerance": 0.01,
+        "match_threshold": 0.95,
+        "dedupe_distance": 10.0,
+        "tag_scale": 1.0,
+        "row_tolerance": 50.0,
+        "tag_text_color": [
+            1.0,
+            0.0,
+            0.0
+        ]
+    }
+}

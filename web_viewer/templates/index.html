@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vector PDF Viewer & Inspector</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/styles.css?v=44">
+    <link rel="stylesheet" href="/static/css/stamp_modal.css?v=10">
+    <script src="/static/js/api_stamp.js?v=20"></script>
+    <script src="/static/js/canvas_vector_renderer.js?v=1"></script>
+    <script type="module">
+  import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
+  window.pdfjsLib = pdfjsLib;
+</script>
+    <script>
+        // Apply theme immediately to prevent flash
+        function applyTheme(theme) {
+            if (theme === 'dark') {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            } else if (theme === 'light') {
+                document.documentElement.setAttribute('data-theme', 'light');
+            } else {
+                if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                } else {
+                    document.documentElement.setAttribute('data-theme', 'dark');
+                }
+            }
+        }
+        try {
+            const cachedTheme = localStorage.getItem('app_theme');
+            if (cachedTheme) applyTheme(cachedTheme);
+        } catch (e) {}
+        
+        window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+            const currentTheme = localStorage.getItem('app_theme') || 'auto';
+            if (currentTheme === 'auto') {
+                applyTheme('auto');
+            }
+        });
+    </script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <button id="btn-toggle-sidebar-left" class="sidebar-toggle-btn" title="Toggle Left Sidebar" style="margin-left: 5px;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg></button>
+            <a href="/home" id="btn-home" title="Back to Projects" style="
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 12px;
+                background: rgba(255,255,255,0.06);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 6px;
+                color: #94a3b8;
+                font-family: 'Inter', sans-serif;
+                font-size: 0.82rem;
+                font-weight: 500;
+                text-decoration: none;
+                margin-left: 8px;
+                margin-right: 14px;
+                transition: background 0.2s, color 0.2s, border-color 0.2s;
+                white-space: nowrap;
+                flex-shrink: 0;
+            " onmouseover="this.style.background='rgba(59,130,246,0.15)';this.style.color='#93c5fd';this.style.borderColor='rgba(59,130,246,0.35)';"
+               onmouseout="this.style.background='rgba(255,255,255,0.06)';this.style.color='#94a3b8';this.style.borderColor='rgba(255,255,255,0.1)';">
+                ← Home
+            </a>
+            <h1 class="logo" id="logo-project-name">Vector PDF Inspector</h1>
+
+            <div class="toolbar" id="main-toolbar">
+                
+                <div id="toolbar-pdf-tools" class="toolbar-panel toolbar-panel--active" style="gap:2px;">
+                    <button id="btn-prev" class="btn">Prev</button>
+                    <span class="page-info-box">
+                        <div class="page-input-wrapper">
+                            <input type="number" id="page-current" value="1" min="1">
+                        </div>
+                        <span class="page-of-text">of</span>
+                        <span id="page-total">1</span>
+                    </span>
+                    <button id="btn-next" class="btn">Next</button>
+
+                    <span class="divider"></span>
+                    
+                    <button id="btn-layout-toggle" class="btn" title="Toggle Page Layout">Layout: Continuous</button>
+                    <button id="btn-temp-color-links" class="btn" style="background:var(--accent); color:white;">Debug Links</button>
+                    
+                    <span class="divider"></span>
+
+                    <button id="btn-renderer-toggle" class="btn" title="Toggle Render Engine" style="min-width: 130px;">Engine: Tiles</button>
+                    
+                    <span class="divider"></span>
+                    
+                    <button id="btn-zoom-out" class="btn">-</button>
+                    <span id="zoom-level" class="zoom-level">100%</span>
+                    <button id="btn-zoom-in" class="btn">+</button>
+                    <button id="btn-zoom-reset" class="btn">Reset</button>
+                    <button id="btn-undo-pdf" class="btn" title="Undo last pattern scan (Ctrl+Z)" disabled>Undo</button>
+                    
+                    <span class="divider"></span>
+                    <button id="btn-toggle-coords" class="btn">Show Coordinates: OFF</button>
+                    <button id="btn-toggle-thin-lines" class="btn" style="display: none !important;">Thin Lines: OFF</button>
+                    <button id="btn-toggle-svg-layer" class="btn active" title="Toggle interactive vector lines">Vectors: ON</button>
+                </div>
+
+                <div id="toolbar-data-viewer" class="toolbar-panel" style="gap: 20px; flex: 1;">
+                    <div style="font-weight: 600; white-space: nowrap;">📊 Project Data Viewer</div>
+                    <div class="search-wrapper" style="position: relative; flex: 1; max-width: 400px; display: flex; gap: 8px;">
+                        <input type="text" id="search-project-data" class="search-input" placeholder="🔍 Search stamps (e.g. Type, Size, Value)..." style="flex: 1; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border-color); background: rgba(255,255,255,0.05); color: var(--text-primary); outline: none; font-size: 0.85rem; transition: border-color 0.2s;" />
+                        <button id="btn-data-viewer-settings" class="btn" title="Table Settings">⚙️ Settings</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; margin-left: auto;">
+                        <button id="btn-reset-data-columns" class="btn">🔄 Reset Columns</button>
+                        <button id="btn-sync-from-pdf" class="btn" title="Sync pattern name, number, and type from PDF stamp annotations into the database" style="background: rgba(20,184,166,0.18); border-color: rgba(20,184,166,0.45); color: #2dd4bf;">🔃 Sync from PDF</button>
+                        <button id="btn-close-data-viewer" class="btn">✕ Close</button>
+                    </div>
+                </div>
+
+                <div id="toolbar-schema-mapper" class="toolbar-panel" style="gap: 20px; flex: 1; justify-content: space-between;">
+                    <div style="font-weight: 600; white-space: nowrap;">Map Template Columns</div>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <button id="btn-preview-template" class="btn" style="display: flex; align-items: center; gap: 6px;">
+                            <span>🔲</span> Preview Template
+                        </button>
+                        <button id="btn-close-mapper" class="btn">Close Mapper</button>
+                        <button id="btn-save-mapping" class="btn primary-btn">Save Mapping</button>
+                    </div>
+                </div>
+                
+                <button id="btn-toggle-sidebar-right" class="sidebar-toggle-btn" title="Toggle Right Sidebar"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg></button>
+            </div>
+        </header>
+
+        <!-- Main Layout Container -->
+        <div class="main-content" style="position: relative;">
+            <!-- Left Panel: PDF list and scanners -->
+            <aside class="sidebar-left">
+                <div class="sidebar-header file-header">
+                    <h3 style="font-size: 0.95rem; font-weight: 600; margin: 0; opacity: 0.85;">Files</h3>
+                    <div class="file-actions">
+                        <button id="btn-upload-trigger" class="btn small-btn" title="Upload PDF" disabled>↑</button>
+                        <button id="btn-refresh-files" class="btn small-btn" title="Refresh PDF List" disabled>↻</button>
+                    </div>
+                    <input type="file" id="file-upload-input" accept=".pdf" style="display: none;">
+                </div>
+
+
+                <ul id="file-list" class="file-list">
+                    <li class="empty-state">Loading project…</li>
+                </ul>
+
+                <!-- Pattern Scanners Section -->
+                <div class="scanner-actions-container">
+                    <div id="add-air-outlet-dropdown-container" style="display: flex; gap: 4px; width: 100%; align-items: center; position: relative; margin-bottom: 4px;">
+                        <button id="btn-add-grill-dropdown-toggle" class="sidebar-round-btn primary" style="flex: 1; justify-content: space-between; padding-right: 10px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span>🔲</span> Air Outlet
+                            </div>
+                            <div style="font-size: 0.7em; opacity: 0.8;">▼</div>
+                        </button>
+                        <div id="air-outlet-dropdown-menu" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 6px; z-index: 100; flex-direction: column; padding: 4px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-top: 4px;">
+                            <button class="file-menu-item btn-air-outlet-type" data-type="Supply" style="margin: 2px 0;">Supply</button>
+                            <button class="file-menu-item btn-air-outlet-type" data-type="Return" style="margin: 2px 0;">Return</button>
+                            <button class="file-menu-item btn-air-outlet-type" data-type="OA" title="outside air" style="margin: 2px 0;">OA</button>
+                            <button class="file-menu-item btn-air-outlet-type" data-type="EX" title="exhaust" style="margin: 2px 0;">EX</button>
+                            <button class="file-menu-item btn-air-outlet-type" data-type="Intake" style="margin: 2px 0;">Intake</button>
+                            <button class="file-menu-item btn-air-outlet-type" data-type="Outlet" style="margin: 2px 0;">Outlet</button>
+                            <button class="file-menu-item" id="btn-add-grill" style="margin: 2px 0;">Other..</button>
+                        </div>
+                        <button id="btn-add-grill-plus" class="btn" title="Save selection &amp; add another Air Outlet" style="display: none;">+</button>
+                    </div>
+                    <div id="add-system-dropdown-container" style="display: flex; gap: 4px; width: 100%; align-items: center; position: relative;">
+                        <button id="btn-add-aac-dropdown-toggle" class="sidebar-round-btn primary" style="flex: 1; justify-content: space-between; padding-right: 10px;">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span>🔲</span> System
+                            </div>
+                            <div style="font-size: 0.7em; opacity: 0.8;">▼</div>
+                        </button>
+                        <div id="system-dropdown-menu" style="display: none; position: absolute; top: 100%; left: 0; right: 0; background: var(--bg-panel); border: 1px solid var(--border-color); border-radius: 6px; z-index: 100; flex-direction: column; padding: 4px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); margin-top: 4px;">
+                            <button class="file-menu-item btn-system-type" data-type="HRV" style="margin: 2px 0;">HRV</button>
+                            <button class="file-menu-item btn-system-type" data-type="ERV" style="margin: 2px 0;">ERV</button>
+                            <button class="file-menu-item btn-system-type" data-type="AC" style="margin: 2px 0;">AC</button>
+                            <button class="file-menu-item" id="btn-add-aac" style="margin: 2px 0;">Other...</button>
+                        </div>
+                        <button id="btn-add-aac-plus" class="btn" title="Save selection &amp; add another System" style="display: none;">+</button>
+                    </div>
+                    <button id="btn-run-matching" class="sidebar-round-btn" disabled>
+                        <span>🔍</span> Scan Matching Lines
+                    </button>
+                    <div id="scan-patterns-group" style="display: flex; gap: 4px; width: 100%;">
+                        <button id="btn-run-patterns" class="sidebar-round-btn primary" disabled style="display: none; flex: 1;">
+                            <span>🤖</span> Scan Patterns
+                        </button>
+                    </div>
+
+                    <div class="sidebar-subheader">Stamp Management</div>
+                    <div style="display: flex; gap: 4px; width: 100%; margin-bottom: 8px;">
+                        <button id="btn-manage-tags" class="sidebar-round-btn secondary" style="flex: 1;">
+                            <span>🏷️</span> Manage Tags
+                        </button>
+                    </div>
+
+                    <div class="sidebar-subheader">Renumber Stamps</div>
+                    <div id="renumber-stamps-section" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px;">
+                        <button id="btn-open-renumber-modal" class="sidebar-round-btn secondary">
+                            <span>🔢</span> Renumber
+                        </button>
+                    </div>
+
+                    
+                    <div class="sidebar-subheader">Word Report Generator</div>
+                    <div id="report-generator-section" style="display: flex; flex-direction: column;">
+                        <select id="select-report-template" class="sidebar-select">
+                            <option value="">-- No Templates Uploaded --</option>
+                        </select>
+                        <button id="btn-generate-report" class="sidebar-round-btn primary" disabled>
+                            <span>📄</span> Generate Word Report
+                        </button>
+                        <button id="btn-upload-template" class="sidebar-round-btn secondary">
+                            <span>📤</span> Upload Docx Template
+                        </button>
+                        <button id="btn-map-template" class="sidebar-round-btn secondary" disabled>
+                            <span>⚙️</span> Map Template Columns
+                        </button>
+                        <button id="btn-view-project-data" class="sidebar-round-btn secondary">
+                            <span>📊</span> View Project Data
+                        </button>
+                        <input type="file" id="template-upload-input" accept=".docx" style="visibility: hidden; position: absolute; width: 0; height: 0;">
+                    </div>
+                    
+                    <div style="display: flex; flex-direction: column; align-items: flex-start; margin-top: 8px; padding-left: 4px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div id="scanner-spinner" class="selection-spinner" style="display: none; margin: 0;"></div>
+                            <div id="scanner-status" style="font-size: 12px; color: var(--text-secondary); word-break: break-word;"></div>
+                        </div>
+                        <div id="btn-scanner-log-more" style="display: none; font-size: 10px; color: var(--text-secondary); text-decoration: underline; cursor: pointer; margin-top: 2px;">More...</div>
+                    </div>
+                    
+
+                </div>
+            </aside>
+
+            <!-- Center Panel: Interactive Viewer -->
+            <main class="viewer-container" id="viewer-container">
+                <div class="pan-zoom-container" id="pan-zoom-container">
+                    <!-- Page wrappers will be injected here dynamically by JS -->
+                </div>
+                
+                <!-- PDF Loading Overlay (shown while PDF renders, hides flicker) -->
+                <div id="pdf-loading-overlay" class="pdf-loading-overlay hidden">
+                    <div class="pdf-loading-icon"></div>
+                    <div id="pdf-loading-filename" class="pdf-loading-filename">Loading PDF…</div>
+                    <div id="pdf-loading-status" class="pdf-loading-status">Please wait…</div>
+                    <div class="pdf-progress-track">
+                        <div id="pdf-progress-fill" class="pdf-progress-fill"></div>
+                    </div>
+                </div>
+
+                <!-- Selection Box (Lasso) Overlay -->
+                <div id="selection-lasso" class="selection-lasso"></div>
+                
+                <!-- Auto-Scroll Navigator -->
+                <div id="auto-scroll-navigator" class="auto-scroll-navigator" style="display: none;">
+                    <div class="dot"></div>
+                </div>
+                
+                <!-- Custom Scrollbar -->
+                <div id="custom-scrollbar" class="custom-scrollbar" style="display: none;">
+                    <div id="custom-scrollbar-thumb" class="custom-scrollbar-thumb"></div>
+                </div>
+                
+                <!-- Coordinates Overlay -->
+                <div id="coords-overlay" class="coords-overlay" style="display: none;" title="Click to change units (pt / in / mm)">
+                    <span class="icon">📍</span>
+                    <span id="coords-val">0.0, 0.0 pt</span>
+                    <span id="coords-page" class="coords-page-badge" style="display: none;">Page 1</span>
+                </div>
+                
+                <!-- Coordinates Tooltip -->
+                <div id="coords-tooltip" class="coords-tooltip"></div>
+                
+            </main>
+
+            <main id="data-viewer-container" class="data-viewer-container" style="display: none; flex-direction: column; padding: 20px; overflow: auto; flex: 1;">
+                <div class="data-tables-wrapper">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h3 style="margin: 0;">🌀 Air Outlets</h3>
+                        <button id="btn-csv-air-outlets" class="btn small-btn" style="display: flex; align-items: center; gap: 6px;">
+                            <span>📥</span> Download CSV
+                        </button>
+                    </div>
+                    <div class="table-scroll-container">
+                        <table id="table-air-outlets" class="data-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 30px; margin-bottom: 10px;">
+                        <h3 style="margin: 0;">⚙️ Systems</h3>
+                        <button id="btn-csv-systems" class="btn small-btn" style="display: flex; align-items: center; gap: 6px;">
+                            <span>📥</span> Download CSV
+                        </button>
+                    </div>
+                    <div class="table-scroll-container">
+                        <table id="table-systems" class="data-table">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Visual Schema Mapper -->
+            <main class="schema-mapper-container" id="schema-mapper-container" style="display: none; flex-direction: column; padding: 20px; flex: 1;">
+                <div style="display: flex; gap: 20px; flex: 1;">
+                    <!-- Left Column: Database Fields -->
+                    <div style="flex: 1; border: 1px solid var(--border-color); border-radius: 8px; background: rgba(255,255,255,0.02); display: flex; flex-direction: column;">
+                        <h3 style="padding: 15px; margin: 0; border-bottom: 1px solid var(--border-color); background: rgba(0,0,0,0.2);">Database Fields</h3>
+                        <div id="mapper-db-fields" style="padding: 15px; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 10px; align-content: flex-start;">
+                            <!-- Fields populated here -->
+                        </div>
+                    </div>
+                    <!-- Right Column: Template Columns -->
+                    <div style="flex: 2; border: 1px solid var(--border-color); border-radius: 8px; background: rgba(255,255,255,0.02); display: flex; flex-direction: column;">
+                        <h3 style="padding: 15px; margin: 0; border-bottom: 1px solid var(--border-color); background: rgba(0,0,0,0.2);">Template Columns</h3>
+                        <div id="mapper-template-columns" style="padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;">
+                            <!-- Columns populated here -->
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Panel: Properties & Inspector -->
+            <aside class="sidebar-right" style="display: none;">
+                <div class="sidebar-header" style="padding: 0;">
+                    <!-- Tab switcher -->
+                    <div class="sidebar-tabs" id="sidebar-tabs">
+                        <button class="sidebar-tab" id="tab-patterns" data-tab="patterns" style="display: none;">Patterns</button>
+                        <button class="sidebar-tab active" id="tab-stamps" data-tab="stamps">
+                            Stamps <span id="stamp-tab-badge" class="stamp-badge" style="display:none;">0</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ===== PATTERNS PANEL (MERGED WITH INSPECTOR) ===== -->
+                <div id="panel-patterns" class="sidebar-panel">
+                    <div class="selection-summary">
+                        Selected Items: <span id="selection-count">0</span>
+                        <span id="selection-spinner" class="selection-spinner" style="display: none;"></span>
+                    </div>
+                    
+                    <div class="action-buttons">
+                        <button id="btn-add-pattern-plus" class="btn primary-btn" title="Add Pattern" style="font-weight: bold; padding: 4px 12px; font-size: 1.2rem; margin-right: auto;">+</button>
+                        <button id="btn-copy-info" class="btn secondary-btn" disabled>Copy Raw Data</button>
+                        <button id="btn-save-selection" class="btn primary-btn" disabled>Save</button>
+                        <button id="btn-clear-selection" class="btn secondary-btn" disabled>Clear</button>
+                    </div>
+                    
+                    <div class="inspector-table-container">
+                        <table class="inspector-table" id="inspector-table">
+                            <thead>
+                                <tr>
+                                    <th>Type</th>
+                                    <th>L (pt)</th>
+                                    <th>W (pt)</th>
+                                    <th>Coords</th>
+                                    <th>Color</th>
+                                </tr>
+                            </thead>
+                            <tbody id="inspector-body">
+                                <!-- selected elements dynamically added here -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div style="margin-top: 15px; margin-bottom: 20px; display: flex; flex-direction: column;">
+                        <h4 style="margin-bottom: 5px; color: var(--text-secondary); font-size: 0.9rem;">Raw Data Output:</h4>
+                        <textarea id="raw-output" readonly placeholder="Selected items JSON will appear here..." style="min-height: 100px; max-height: 150px;"></textarea>
+                    </div>
+
+                    <div style="height: 1px; background: var(--border-color); margin: 15px 0;"></div>
+
+                    <div class="selection-summary" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span id="patterns-count-label">No patterns found</span>
+                    </div>
+                    <ul class="stamps-list" id="patterns-list">
+                        <li class="stamps-empty-state">No patterns saved for this PDF.</li>
+                    </ul>
+                </div>
+
+                <!-- ===== STAMPS PANEL ===== -->
+                <div id="panel-stamps" class="sidebar-panel active">
+                    <button id="btn-add-stamp-manually" class="btn primary-btn" style="width: 100%; margin-bottom: 6px;">+ Add Stamp Manually</button>
+                    <button id="btn-move-stamp-panel" class="btn" style="width: 100%; margin-bottom: 10px;">✏️ Move Selected Stamp</button>
+                    <div class="selection-summary" style="display: flex; justify-content: space-between; align-items: center;">
+                        <span id="stamps-count-label">No stamps found</span>
+                    </div>
+                    <ul class="stamps-list" id="stamps-list">
+                        <li class="stamps-empty-state">No stamps detected on this drawing.</li>
+                    </ul>
+                </div>
+            </aside>
+        </div>
+    </div>
+
+    <!-- Item Creation Modal -->
+    <div id="add-item-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="add-item-title">Add Item</h3>
+                <span id="btn-close-item-modal" class="close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label id="lbl-item-select" for="item-type-select">Choose Existing:</label>
+                    <select id="item-type-select" class="project-select">
+                        <option value="">-- Create New --</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-top: 15px;">
+                    <label id="lbl-item-input" for="new-item-input-name">Or Enter New Name:</label>
+                    <input type="text" id="new-item-input-name" placeholder="e.g., Type A" autocomplete="off">
+                </div>
+                <div id="item-modal-error-message" class="error-message" style="display: none;"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="btn-cancel-item" class="btn">Cancel</button>
+                <button id="btn-submit-item" class="btn primary-btn">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Stamp Manually Modal -->
+    <div id="add-stamp-manually-modal" class="modal" style="display: none;">
+        <div class="modal-content glass-modal" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3 id="add-stamp-manually-title">Add Stamp Manually</h3>
+                <span id="btn-close-add-stamp-manually-modal" class="close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom: 16px;">
+                    <label for="select-stamp-shape">Select Stamp Shape to Copy:</label>
+                    <select id="select-stamp-shape" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); height: 36px; box-sizing: border-box;">
+                        <option value="">-- Loading Shapes --</option>
+                    </select>
+                </div>
+                <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                    <button id="btn-cancel-add-stamp-manually" class="btn" style="margin: 0;">Cancel</button>
+                    <button id="btn-confirm-add-stamp-manually" class="btn primary-btn" style="margin: 0;">Add Stamp</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stamp Metadata Modal -->
+    <div id="stamp-meta-modal" class="modal" style="display: none;">
+        <div class="modal-content glass-modal">
+            <div class="modal-header" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+                <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+                    <h3 id="stamp-meta-title" style="margin: 0;">Name</h3>
+                    <span id="btn-close-stamp-modal" class="close-btn">&times;</span>
+                </div>
+                <div id="stamp-meta-uuid" style="font-size: 0.65rem; color: var(--text-secondary); opacity: 0.5;"></div>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <label for="select-stamp-type">Stamp Type:</label>
+                    <select id="select-stamp-type" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); height: 36px; box-sizing: border-box;">
+                        <option value="air_outlet">Air Outlet</option>
+                        <option value="system">System</option>
+                    </select>
+                </div>
+
+
+
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <label for="stamp-group-select">System Group:</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <select id="stamp-group-select" class="project-select" style="flex: 3; height: 36px; padding: 8px; box-sizing: border-box;">
+                            <option value="">-- No System Group --</option>
+                        </select>
+                        <button id="btn-new-group" class="btn small-btn" style="flex: 1; height: 36px; box-sizing: border-box; margin: 0; white-space: nowrap;">+ New System</button>
+                    </div>
+                </div>
+
+                <div class="form-group" id="stamp-system-pattern-group" style="margin-bottom: 12px; display: none;">
+                    <label for="stamp-system-pattern-select">System Pattern:</label>
+                    <select id="stamp-system-pattern-select" class="project-select" style="width: 100%; height: 36px; padding: 8px; box-sizing: border-box;">
+                        <option value="">-- No System Pattern --</option>
+                    </select>
+                </div>
+                
+                <div class="form-group" id="stamp-air-outlet-type-group" style="margin-bottom: 12px; display: none;">
+                    <label for="stamp-air-outlet-type-select">Air Outlet Type:</label>
+                    <select id="stamp-air-outlet-type-select" class="project-select" style="width: 100%; height: 36px; padding: 8px; box-sizing: border-box;">
+                        <option value="">-- No Air Outlet Type --</option>
+                        <option value="Supply">Supply</option>
+                        <option value="Return">Return</option>
+                        <option value="OA">OA</option>
+                        <option value="EX">EX</option>
+                        <option value="Intake">Intake</option>
+                        <option value="Outlet">Outlet</option>
+                    </select>
+                </div>
+                
+                <!-- Inline New Group Section -->
+                <div id="new-group-modal" style="display: none; flex-direction: column; gap: 8px; margin-top: 12px; padding: 12px; background: var(--modal-input-bg); border-radius: 8px; border: 1px solid var(--modal-input-border);">
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <div class="form-group" style="flex: 1;">
+                            <label for="new-group-name">System Name:</label>
+                            <input type="text" id="new-group-name" placeholder="System Name" style="width: 100%; height: 36px; padding: 8px; box-sizing: border-box; background: var(--modal-input-bg); border: 1px solid var(--modal-input-border); border-radius: 4px; color: var(--text-primary);">
+                        </div>
+                        <div class="form-group" style="width: 60px;">
+                            <label for="new-group-color">Color:</label>
+                            <input type="color" id="new-group-color" value="#ff0000" style="width: 100%; height: 36px; border: none; background: transparent; cursor: pointer; padding: 0;">
+                        </div>
+                    </div>
+                    <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px;">
+                        <button id="btn-cancel-group" class="btn small-btn">Cancel</button>
+                        <button id="btn-save-group" class="btn small-btn primary-btn">Create</button>
+                    </div>
+                </div>
+                
+                <hr style="border-color: var(--modal-header-border); margin: 15px 0;">
+                
+                <h4>Fields</h4>
+                <div id="stamp-fields-container">
+                    <!-- Dynamic fields will be inserted here -->
+                </div>
+                <div style="display: flex; justify-content: flex-end; margin-top: 4px;">
+                    <div id="stamp-fields-show-more" style="display: none;">
+                        <span style="cursor: pointer; text-decoration: underline; color: var(--text-secondary); font-size: 0.85rem;">Show more</span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                <button id="btn-add-field" class="btn secondary-btn" style="margin: 0;">+ Add Field</button>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <button id="btn-delete-stamp" class="btn danger-btn" style="margin: 0;">Delete Stamp</button>
+                    <button id="btn-cancel-stamp" class="btn" style="margin: 0;">Cancel</button>
+                    <button id="btn-save-stamp" class="btn primary-btn" style="margin: 0;">Save Changes</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Renumber Modal -->
+    <div id="renumber-modal" class="modal" style="display: none;">
+        <div class="modal-content glass-modal" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3 id="renumber-modal-title">Renumber Stamps</h3>
+                <span id="btn-close-renumber-modal" class="close-btn">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom: 16px;">
+                    <label for="select-renumber-type">Stamp Type:</label>
+                    <select id="select-renumber-type" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); height: 36px; box-sizing: border-box;">
+                        <option value="air_outlet">Air Outlet</option>
+                        <option value="system">System</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom: 16px;">
+                    <label for="select-renumber-group-field">Group Field:</label>
+                    <select id="select-renumber-group-field" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); height: 36px; box-sizing: border-box;">
+                        <option value="">All</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button id="btn-cancel-renumber" class="btn" style="margin: 0;">Cancel</button>
+                <button id="btn-run-renumber" class="btn primary-btn" style="margin: 0;">Run</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const currentRenderer = localStorage.getItem('pdf_renderer') || 'legacy';
+        
+        // Setup toggle UI
+        document.addEventListener('DOMContentLoaded', () => {
+            const btnToggle = document.getElementById('btn-renderer-toggle');
+            
+            if (currentRenderer === 'pdfjs') {
+                btnToggle.innerHTML = 'Engine: <b style="color: var(--neon-pink);">PDF.js</b>';
+            } else if (currentRenderer === 'canvas') {
+                btnToggle.innerHTML = 'Engine: <b style="color: #10b981;">Hybrid Canvas</b>';
+            } else {
+                btnToggle.innerHTML = 'Engine: <b style="color: var(--neon-cyan);">Tiles</b>';
+            }
+            
+            btnToggle.addEventListener('click', () => {
+                let nextRenderer;
+                if (currentRenderer === 'legacy') {
+                    nextRenderer = 'pdfjs';
+                } else if (currentRenderer === 'pdfjs') {
+                    nextRenderer = 'canvas';
+                } else {
+                    nextRenderer = 'legacy';
+                }
+                localStorage.setItem('pdf_renderer', nextRenderer);
+                window.location.reload();
+            });
+        });
+
+        // Load correct script dynamically
+        const scriptsToLoad = [
+            currentRenderer === 'pdfjs' ? '/static/js/app_pdfjs.js?v=24' : '/static/js/app.js?v=83',
+            '/static/js/stamp_modal.js?v=11',
+            '/static/js/manage_tags.js?v=10'
+        ];
+
+        scriptsToLoad.forEach(src => {
+            const script = document.createElement('script');
+            script.src = src;
+            script.defer = true;
+            document.head.appendChild(script);
+        });
+
+        // Ensure theme is up to date
+        fetch('/api/config')
+            .then(res => res.json())
+            .then(data => {
+                if (data.theme) {
+                    localStorage.setItem('app_theme', data.theme);
+                    applyTheme(data.theme);
+                }
+            })
+            .catch(e => console.error("Could not fetch config", e));
+    </script>
+    <div id="data-viewer-settings-modal" class="modal" style="display: none; align-items: center; justify-content: center; z-index: 10001; position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);">
+        <div class="modal-content" style="width: 700px; max-width: 90vw; max-height: 90vh; display: flex; flex-direction: column; background: var(--modal-bg); border: 1px solid var(--modal-border); border-radius: 12px; box-shadow: var(--modal-shadow);">
+            <div class="modal-header" style="padding: 16px 20px; border-bottom: 1px solid var(--modal-header-border); display: flex; justify-content: space-between; align-items: center; background: var(--modal-footer-bg);">
+                <h3 style="margin: 0; color: var(--text-primary);">⚙️ Table Settings</h3>
+                <span id="close-dv-settings-btn" class="close" style="cursor: pointer; font-size: 20px; color: var(--modal-close-color);">&times;</span>
+            </div>
+            
+            <div class="modal-body" style="padding: 20px; overflow-y: auto; overflow-x: hidden; flex: 1; display: flex; gap: 20px;">
+                <!-- Air Outlets Settings -->
+                <div style="flex: 1; display: flex; flex-direction: column; gap: 10px;">
+                    <h4 style="margin: 0; color: var(--text-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">🌀 Air Outlets</h4>
+                    <p style="margin: 0; font-size: 12px; color: var(--text-secondary);">Default columns for new stamps & display order.</p>
+                    <div id="dv-settings-air-outlets-list" style="display: flex; flex-direction: column; gap: 6px; flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--modal-input-bg); min-height: 300px;">
+                        <!-- List items injected here via JS -->
+                    </div>
+                    <button id="btn-dv-settings-add-air-outlet" class="btn secondary-btn" style="width: 100%;">+ Add Column</button>
+                </div>
+                
+                <!-- Systems Settings -->
+                <div style="flex: 1; display: flex; flex-direction: column; gap: 10px;">
+                    <h4 style="margin: 0; color: var(--text-primary); border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">⚙️ Systems</h4>
+                    <p style="margin: 0; font-size: 12px; color: var(--text-secondary);">Default columns for new stamps & display order.</p>
+                    <div id="dv-settings-systems-list" style="display: flex; flex-direction: column; gap: 6px; flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--modal-input-bg); min-height: 300px;">
+                        <!-- List items injected here via JS -->
+                    </div>
+                    <button id="btn-dv-settings-add-system" class="btn secondary-btn" style="width: 100%;">+ Add Column</button>
+                </div>
+            </div>
+            
+            <div class="modal-footer" style="padding: 16px 20px; border-top: 1px solid var(--modal-header-border); display: flex; justify-content: flex-end; gap: 12px; background: var(--modal-footer-bg);">
+                <button id="btn-dv-settings-cancel" class="btn">Cancel</button>
+                <button id="btn-dv-settings-save" class="btn primary-btn">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Small Add Column Popup Modal -->
+    <div id="add-column-modal" class="modal" style="display: none; align-items: center; justify-content: center; z-index: 10002; position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);">
+        <div class="modal-content" style="width: fit-content; min-width: 320px; max-width: 90vw; background: var(--modal-bg); border: 1px solid var(--modal-border); border-radius: 12px; box-shadow: var(--modal-shadow); display: flex; flex-direction: column;">
+            <div class="modal-header" style="padding: 12px 16px; border-bottom: 1px solid var(--modal-header-border); display: flex; justify-content: space-between; align-items: center; background: var(--modal-footer-bg);">
+                <h4 style="margin: 0; color: var(--text-primary);">➕ Add New Column</h4>
+                <span id="close-add-col-btn" class="close" style="cursor: pointer; font-size: 18px; color: var(--modal-close-color);">&times;</span>
+            </div>
+            <div class="modal-body" style="padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+                <label style="font-size: 13px; color: var(--text-secondary);" for="new-col-name-input">Column Name:</label>
+                <input type="text" id="new-col-name-input" placeholder="e.g., HEIGHT" style="padding: 6px 10px; background: var(--modal-input-bg); border: 1px solid var(--modal-input-border); color: var(--text-primary); border-radius: 4px; font-size: 13px; outline: none; margin-bottom: 4px;" autocomplete="off">
+                <div id="add-col-error" style="color: #ef4444; font-size: 12px; display: none;">Please enter a column name.</div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 16px; border-top: 1px solid var(--modal-header-border); display: flex; justify-content: flex-end; gap: 10px; background: var(--modal-footer-bg);">
+                <button id="btn-add-col-cancel" class="btn">Cancel</button>
+                <button id="btn-add-col-confirm" class="btn primary-btn">Add</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="scanner-log-panel" class="scanner-log-panel floating-log-panel" style="display: none;">
+        <div class="scanner-log-header">
+            <div class="scanner-log-dots">
+                <span class="dot dot-red"></span>
+                <span class="dot dot-yellow"></span>
+                <span class="dot dot-green"></span>
+            </div>
+            <span class="scanner-log-title">Console Output</span>
+            <button id="btn-close-scanner-log" style="margin-left: auto; background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 14px; padding: 0 4px;">✕</button>
+        </div>
+        <pre id="scanner-log-full" class="scanner-log-full" style="display: block;"></pre>
+    </div>
+
+    <!-- Modeless Dialog for Manage Tags -->
+    <div id="manage-tags-panel" class="modal-content glass-modal" style="display: none; position: fixed; width: 600px; height: 500px; right: 50px; top: 100px; z-index: 10005; resize: both; overflow: hidden; flex-direction: column; background: var(--modal-bg); border: 1px solid var(--modal-border); border-radius: 12px; box-shadow: var(--modal-shadow); padding: 0;">
+        <div class="modal-header" id="manage-tags-header" style="cursor: move; flex-shrink: 0; padding: 12px 16px; border-bottom: 1px solid var(--modal-header-border); display: flex; justify-content: space-between; align-items: center; background: var(--modal-footer-bg); border-top-left-radius: 12px; border-top-right-radius: 12px;">
+            <h4 style="margin: 0; color: var(--text-primary);">🏷️ Manage Tags</h4>
+            <span id="btn-close-manage-tags" class="close" style="cursor: pointer; font-size: 20px; color: var(--modal-close-color); margin-left: auto;">&times;</span>
+        </div>
+        <div class="modal-body" style="padding: 15px; overflow-y: auto; flex: 1; background: var(--modal-bg); color: var(--text-primary); display: flex; flex-direction: column; gap: 15px;">
+            <div style="border: 1px solid var(--border-color); padding: 10px; border-radius: 6px;">
+                <h4 style="margin: 0 0 10px 0;">1. Upload Sample Stamps (Images/PDF)</h4>
+                <div style="display: flex; gap: 10px;">
+                    <input type="file" id="stamp-sample-upload" accept="image/png, image/jpeg, application/pdf" multiple style="display: none;">
+                    <button id="btn-trigger-stamp-upload" class="btn secondary-btn">Upload Files</button>
+                    <span id="stamp-upload-status" style="font-size: 0.85rem; color: var(--text-secondary); align-self: center;">No files uploaded</span>
+                </div>
+                <div id="uploaded-stamps-list" style="display: flex; gap: 5px; flex-wrap: wrap; margin-top: 10px;"></div>
+            </div>
+
+            <div style="display: flex; gap: 15px; flex: 1;">
+                <div style="border: 1px solid var(--border-color); padding: 10px; border-radius: 6px; flex: 1; display: flex; flex-direction: column;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h4 style="margin: 0;">2. Assign Shape</h4>
+                        <button id="btn-add-shape-rule" class="btn primary-btn small-btn">+ Add</button>
+                    </div>
+                    <div id="shape-rules-container" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                        <!-- Shape Rules will be injected here -->
+                    </div>
+                </div>
+
+                <div style="border: 1px solid var(--border-color); padding: 10px; border-radius: 6px; flex: 1; display: flex; flex-direction: column;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h4 style="margin: 0;">3. Assign Color</h4>
+                        <button id="btn-add-color-rule" class="btn primary-btn small-btn">+ Add</button>
+                    </div>
+                    <div id="color-rules-container" style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                        <!-- Color Rules will be injected here -->
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: auto;">
+                <button id="btn-save-tags-config" class="btn primary-btn">Save Configuration</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const btnOpenRenumber = document.getElementById('btn-open-renumber-modal');
+            const renumberModal = document.getElementById('renumber-modal');
+            const btnCloseRenumber = document.getElementById('btn-close-renumber-modal');
+            const btnCancelRenumber = document.getElementById('btn-cancel-renumber');
+            const btnRunRenumber = document.getElementById('btn-run-renumber');
+            const selectType = document.getElementById('select-renumber-type');
+            const selectGroupField = document.getElementById('select-renumber-group-field');
+
+            function closeRenumberModal() {
+                renumberModal.style.display = 'none';
+            }
+
+            btnOpenRenumber.addEventListener('click', () => {
+                renumberModal.style.display = 'flex';
+                loadRenumberFields();
+            });
+            btnCloseRenumber.addEventListener('click', closeRenumberModal);
+            btnCancelRenumber.addEventListener('click', closeRenumberModal);
+
+            // Close on click outside modal content
+            renumberModal.addEventListener('click', (e) => {
+                if (e.target === renumberModal) {
+                    closeRenumberModal();
+                }
+            });
+
+            // Close on Escape key press
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && renumberModal.style.display === 'flex') {
+                    closeRenumberModal();
+                }
+            });
+
+            async function loadRenumberFields() {
+                // Determine project name (depends on app.js setting window.currentProject)
+                const project = window.currentProject || '';
+                const stampType = selectType.value;
+                if (!project) return;
+                
+                try {
+                    const res = await fetch(`/api/projects/${encodeURIComponent(project)}/fields/${encodeURIComponent(stampType)}`);
+                    if (res.ok) {
+                        const fields = await res.json();
+                        const currentVal = selectGroupField.value;
+                        selectGroupField.innerHTML = '<option value="">All</option>';
+                        fields.forEach(f => {
+                            if (f !== "#") {
+                                const opt = document.createElement('option');
+                                opt.value = f;
+                                opt.textContent = f;
+                                selectGroupField.appendChild(opt);
+                            }
+                        });
+                        if (fields.includes(currentVal) && currentVal !== "#") {
+                            selectGroupField.value = currentVal;
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error loading fields:", e);
+                }
+            }
+
+            selectType.addEventListener('change', loadRenumberFields);
+            selectGroupField.addEventListener('focus', loadRenumberFields);
+
+            btnRunRenumber.addEventListener('click', async () => {
+                const project = window.currentProject || '';
+                const pdf = window.currentPdf;
+                const stampType = selectType.value;
+                const groupField = selectGroupField.value;
+
+                if (!project || !pdf) {
+                    alert("Please open a project and a PDF first.");
+                    return;
+                }
+
+                btnRunRenumber.disabled = true;
+                const origHtml = btnRunRenumber.innerHTML;
+                btnRunRenumber.innerHTML = "<span>⏳</span> Running...";
+
+                try {
+                    const res = await fetch(`/api/projects/${encodeURIComponent(project)}/renumber_stamps`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            pdf_path: pdf,
+                            stamp_type: stampType,
+                            group_field: groupField
+                        })
+                    });
+                    
+                    const data = await res.json();
+                    if (res.ok) {
+                        alert(`Successfully renumbered ${data.renumbered || 0} stamps.`);
+                        if (window.refreshStampVisuals) window.refreshStampVisuals();
+                        // refresh data viewer if open
+                        const dataViewer = document.getElementById("data-viewer-container");
+                        if (dataViewer && dataViewer.style.display !== "none") {
+                            const btnViewData = document.getElementById("btn-view-project-data");
+                            if (btnViewData) btnViewData.click();
+                        }
+                        // Refresh the canvas by reloading the PDF
+                        const activeFile = document.querySelector('.file-list li.active');
+                        if (activeFile) {
+                            activeFile.click();
+                        }
+                        closeRenumberModal();
+                    } else {
+                        alert("Error: " + (data.error || "Unknown error"));
+                    }
+                } catch (e) {
+                    alert("Error: " + e.message);
+                } finally {
+                    btnRunRenumber.disabled = false;
+                    btnRunRenumber.innerHTML = origHtml;
+                }
+            });
+        });
+    </script>
+</body>
+</html>

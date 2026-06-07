@@ -6,7 +6,11 @@
     "targets": [
         "Pencill",
         "HVAC return",
-        "HVAC Supply"
+        "HVAC Supply",
+        "grill",
+        "grill 1",
+        "grill 4",
+        "grill 6"
     ],
     "search": {
         "search_rect_margin": 81.25,
@@ -67,6 +71,37 @@
             1.0,
             1.0,
             1.0
+        ]
+    },
+    "theme": "auto",
+    "data_viewer": {
+        "system_fields": [
+            {
+                "name": "#",
+                "value": "",
+                "type": "string"
+            }
+        ],
+        "air_outlet_fields": [
+            {
+                "name": "#",
+                "value": "",
+                "type": "string"
+            }
+        ],
+        "system_column_order": [
+            "UUID",
+            "PDF File",
+            "Page",
+            "Pattern",
+            "#"
+        ],
+        "air_outlet_column_order": [
+            "PDF File",
+            "Page",
+            "Pattern",
+            "#",
+            "UUID"
         ]
     }
 }

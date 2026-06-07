@@ -1,0 +1,17 @@
+{
+  "name": "vector-pdf-viewer",
+  "version": "1.0.0",
+  "description": "Vector PDF Viewer with stamping and pattern detection",
+  "main": "app.py",
+  "scripts": {
+    "start": "python app.py",
+    "dev": "npm run start",
+    "build": "echo No build step"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {},
+  "dependencies": {
+    "pdfjs-dist": "^4.10.38"
+  }
+}

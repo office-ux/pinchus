@@ -1,0 +1,133 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign In — Vector PDF Inspector</title>
+    <meta name="description" content="Sign in to access the Vector PDF Inspector workspace.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/login.css">
+</head>
+<body>
+    <!-- Animated background -->
+    <div class="bg-mesh"></div>
+    <div class="bg-grid"></div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+
+    <div class="login-wrapper">
+        <!-- Logo -->
+        <div class="login-logo">
+            <div class="logo-icon">📐</div>
+            <h1>Vector PDF Inspector</h1>
+            <p>Advanced drawing analysis &amp; pattern detection</p>
+        </div>
+
+        <!-- Card -->
+        <div class="login-card">
+            <p class="card-title">Welcome back</p>
+
+            <!-- Error alert -->
+            
+            <div class="error-alert" id="login-error" role="alert">
+                <span>⚠</span>
+                <span id="error-text"></span>
+            </div>
+            
+
+            <form id="login-form" method="POST" action="/login" novalidate>
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <div class="input-wrapper">
+                        <input
+                            type="text"
+                            id="username"
+                            name="username"
+                            placeholder="Enter your username"
+                            autocomplete="username"
+                            autocorrect="off"
+                            autocapitalize="none"
+                            spellcheck="false"
+                            value=""
+                            required
+                        >
+                        <span class="input-icon">👤</span>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <div class="input-wrapper">
+                        <input
+                            type="password"
+                            id="password"
+                            name="password"
+                            placeholder="Enter your password"
+                            autocomplete="current-password"
+                            required
+                        >
+                        <span class="input-icon">🔑</span>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-login" id="btn-submit">
+                    <span class="btn-text">Sign In</span>
+                    <span class="btn-spinner">
+                        <span class="spinner-ring"></span>
+                    </span>
+                </button>
+
+                <p style="text-align:center; margin-top: 20px; font-size: 0.85rem; color: var(--text-secondary);">
+                    Don't have an account?
+                    <a href="/register" style="color: var(--neon-cyan); text-decoration: none; font-weight: 500; margin-left: 4px;">Create one</a>
+                </p>
+            </form>
+        </div>
+
+        <p class="login-footer">Internal workspace — contact your administrator for access</p>
+    </div>
+
+    <script>
+        const form = document.getElementById('login-form');
+        const btn  = document.getElementById('btn-submit');
+        const err  = document.getElementById('login-error');
+
+        // Flash success message when redirected from registration
+        if (new URLSearchParams(window.location.search).get('registered') === '1') {
+            const errEl = document.getElementById('login-error');
+            errEl.style.background = 'rgba(16,185,129,0.12)';
+            errEl.style.borderColor = 'rgba(16,185,129,0.35)';
+            errEl.style.color = '#6ee7b7';
+            document.getElementById('error-text').textContent = 'Account created! You can now sign in.';
+            errEl.querySelector('span').textContent = '✓';
+            errEl.classList.add('visible');
+        }
+
+        form.addEventListener('submit', function(e) {
+            const u = document.getElementById('username').value.trim();
+            const p = document.getElementById('password').value;
+            const err = document.getElementById('login-error');
+
+            if (!u || !p) {
+                e.preventDefault();
+                document.getElementById('error-text').textContent = 'Please fill in both fields.';
+                err.classList.add('visible');
+                return;
+            }
+            err.classList.remove('visible');
+            btn.classList.add('loading');
+        });
+
+        // Auto-focus first empty field
+        window.addEventListener('DOMContentLoaded', () => {
+            const u = document.getElementById('username');
+            const p = document.getElementById('password');
+            if (!u.value) u.focus();
+            else p.focus();
+        });
+    </script>
+</body>
+</html>
