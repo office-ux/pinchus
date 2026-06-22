@@ -246,6 +246,11 @@
                         <option value="light" style="background: var(--modal-bg); color: var(--text-primary);">Light Mode</option>
                     </select>
                 </div>
+                <div class="form-group" style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 16px;">
+                    <label>Server Updates</label>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">Pull the latest code from GitHub and restart the server automatically.</div>
+                    <button class="btn-primary" id="settings-update-btn" style="background: #2196F3; width: 100%; padding: 10px 14px; border-radius: var(--radius-sm); border: none; color: white; font-weight: 500; cursor: pointer;">Update Server</button>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn-cancel" id="settings-cancel-btn">Close</button>
@@ -764,6 +769,35 @@
                 settingsSaveBtn.textContent = 'Save';
             }
         });
+
+        const settingsUpdateBtn = document.getElementById('settings-update-btn');
+        if (settingsUpdateBtn) {
+            settingsUpdateBtn.addEventListener('click', async () => {
+                if (!confirm("Are you sure you want to pull the latest code and restart the server?")) return;
+                settingsUpdateBtn.disabled = true;
+                settingsUpdateBtn.textContent = 'Updating...';
+                try {
+                    const res = await fetch('/api/update_server', { method: 'POST' });
+                    const data = await res.json();
+                    if (data.success) {
+                        showToast('Git Pull: ' + (data.output || 'success'));
+                        showToast('Server is restarting... Reloading page in 5s', 'info');
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 5000);
+                    } else {
+                        showToast('Update failed: ' + (data.error || 'unknown error'), 'error');
+                        settingsUpdateBtn.disabled = false;
+                        settingsUpdateBtn.textContent = 'Update Server';
+                    }
+                } catch (e) {
+                    showToast('Server is restarting... Reloading page in 5s', 'info');
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 5000);
+                }
+            });
+        }
 
         async function fetchInitialTheme() {
             try {

@@ -2392,6 +2392,44 @@ def update_data_viewer_config():
     save_config(config)
     return jsonify({"success": True})
 
+@app.route("/api/update_server", methods=["POST"])
+@api_login_required
+def update_server():
+    try:
+        import subprocess
+        import threading
+        import time
+
+        project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # Git Pull
+        pull_res = subprocess.run(
+            ["git", "pull"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        def restart_gunicorn():
+            time.sleep(1)
+            if os.name != 'nt':
+                subprocess.run(["systemctl", "restart", "pinchus"])
+
+        threading.Thread(target=restart_gunicorn).start()
+
+        return jsonify({
+            "success": True,
+            "output": pull_res.stdout
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 @app.route("/api/groups/<path:project_name>", methods=["GET"])
 @api_login_required
 def get_groups(project_name):
