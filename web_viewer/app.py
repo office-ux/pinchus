@@ -7,8 +7,12 @@ import shutil
 import threading
 import traceback
 import bcrypt
-import pythoncom
-import win32com.client
+try:
+    import pythoncom
+    import win32com.client
+    HAS_WIN32COM = True
+except ImportError:
+    HAS_WIN32COM = False
 from contextlib import redirect_stderr, redirect_stdout
 from functools import wraps
 from queue import Queue
@@ -819,6 +823,7 @@ def renumber_stamps(project_name):
     pdf_path = data.get("pdf_path")
     stamp_type = data.get("stamp_type")
     group_field = data.get("group_field", "")
+    field_name = data.get("field_name", "#")
     
     if not pdf_path or not stamp_type:
         return jsonify({"error": "Missing parameters"}), 400
@@ -846,17 +851,19 @@ def renumber_stamps(project_name):
         # Attach bounding boxes to stamps
         valid_stamps = []
         for s in stamps:
-            xref = s["xref"]
-            page_num = s["page"]
-            try:
-                page = doc[page_num - 1]
-                annot = page.load_annot(xref)
-                if annot:
-                    rect = annot.rect
-                    s["bbox"] = [rect.x0, rect.y0, rect.x1, rect.y1]
-                    valid_stamps.append(s)
-            except Exception:
-                pass
+            # Only include stamps containing the target field (or '#' which is default)
+            if field_name == "#" or field_name in s.get("fields", {}):
+                xref = s["xref"]
+                page_num = s["page"]
+                try:
+                    page = doc[page_num - 1]
+                    annot = page.load_annot(xref)
+                    if annot:
+                        rect = annot.rect
+                        s["bbox"] = [rect.x0, rect.y0, rect.x1, rect.y1]
+                        valid_stamps.append(s)
+                except Exception:
+                    pass
         
         # Group stamps by the chosen group_field value
         from collections import defaultdict
@@ -895,7 +902,7 @@ def renumber_stamps(project_name):
                         
                     new_pattern_name = f"{base_pat}_{new_hash_value}" if base_pat else new_hash_value
                     
-                    updates.append((s["id"], "#", new_hash_value, new_pattern_name))
+                    updates.append((s["id"], field_name, new_hash_value, new_pattern_name))
                     
                     # Update the PDF annotation
                     try:
@@ -2634,26 +2641,59 @@ def get_template_preview_html(project_name, template_name):
     html_path = os.path.join(html_dir, "preview.html")
 
     if not os.path.exists(html_path):
-        try:
-            pythoncom.CoInitialize()
-            word = win32com.client.DispatchEx("Word.Application")
-            word.Visible = False
-            doc = word.Documents.Open(os.path.abspath(template_path))
-            
-            # Configure WebOptions for modern browser compatibility and UTF-8
-            doc.WebOptions.Encoding = 65001 # msoEncodingUTF8
-            doc.WebOptions.RelyOnVML = False
-            doc.WebOptions.AllowPNG = True
-            doc.WebOptions.OptimizeForBrowser = True
-            
-            doc.SaveAs2(os.path.abspath(html_path), FileFormat=8) # wdFormatHTML
-            doc.Close()
-            word.Quit()
-        except Exception as e:
-            traceback.print_exc()
-            return jsonify({"error": f"Failed to convert document: {str(e)}"}), 500
-        finally:
-            pythoncom.CoUninitialize()
+        if HAS_WIN32COM:
+            try:
+                pythoncom.CoInitialize()
+                word = win32com.client.DispatchEx("Word.Application")
+                word.Visible = False
+                doc = word.Documents.Open(os.path.abspath(template_path))
+                
+                # Configure WebOptions for modern browser compatibility and UTF-8
+                doc.WebOptions.Encoding = 65001 # msoEncodingUTF8
+                doc.WebOptions.RelyOnVML = False
+                doc.WebOptions.AllowPNG = True
+                doc.WebOptions.OptimizeForBrowser = True
+                
+                doc.SaveAs2(os.path.abspath(html_path), FileFormat=8) # wdFormatHTML
+                doc.Close()
+                word.Quit()
+            except Exception as e:
+                traceback.print_exc()
+                return jsonify({"error": f"Failed to convert document: {str(e)}"}), 500
+            finally:
+                pythoncom.CoUninitialize()
+        else:
+            try:
+                import subprocess
+                # Run LibreOffice headless conversion
+                cmd = [
+                    "libreoffice",
+                    "--headless",
+                    "--convert-to", "html",
+                    "--outdir", html_dir,
+                    os.path.abspath(template_path)
+                ]
+                subprocess.run(cmd, check=True)
+                # LibreOffice will create a file named `<template_name_without_ext>.html` in html_dir
+                generated_name = f"{os.path.splitext(template_name)[0]}.html"
+                generated_path = os.path.join(html_dir, generated_name)
+                if os.path.exists(generated_path):
+                    # Rename generated file to preview.html
+                    if os.path.exists(html_path):
+                        os.remove(html_path)
+                    os.rename(generated_path, html_path)
+                else:
+                    # sometimes LibreOffice uses the exact filename with .html appended
+                    generated_path_alt = os.path.join(html_dir, f"{template_name}.html")
+                    if os.path.exists(generated_path_alt):
+                        if os.path.exists(html_path):
+                            os.remove(html_path)
+                        os.rename(generated_path_alt, html_path)
+                    else:
+                        raise FileNotFoundError(f"Could not find converted HTML file. Expected at {generated_path}")
+            except Exception as e:
+                traceback.print_exc()
+                return jsonify({"error": f"Failed to convert document via LibreOffice: {str(e)}"}), 500
 
     return jsonify({"success": True, "url": f"/api/projects/{project_name}/templates/{template_name}/html_asset/preview.html"})
 
@@ -2964,17 +3004,48 @@ def manage_tags_apply_rules():
                                         doc.insert_pdf(src_shape)
                                         src_shape.close()
                                         
-                                        # The inserted page is at the end of the document
                                         temp_page = doc[-1]
-                                        copied_annot = temp_page.first_annot
-                                        if copied_annot:
-                                            # Read the Appearance stream (AP) dictionary string from the copied annot
-                                            ap_val = doc.xref_get_key(copied_annot.xref, "AP")
-                                            if ap_val[0] == "dict":
-                                                # Set it on the target annotation
-                                                doc.xref_set_key(annot.xref, "AP", ap_val[1])
-                                                add_log(f"Successfully applied vector shape '{base_shape}' to stamp {u['stamp_id']}")
+                                        ap_val = None
+                                        
+                                        # First try: does it have a Stamp annotation?
+                                        for copied_annot in temp_page.annots() or []:
+                                            if copied_annot.type[1] == "Stamp":
+                                                ap_dict = doc.xref_get_key(copied_annot.xref, "AP")
+                                                if ap_dict[0] == "dict":
+                                                    ap_val = ap_dict[1]
+                                                    break
+                                                    
+                                        # Second try: use the entire page's contents!
+                                        if not ap_val:
+                                            page_xref = temp_page.xref
+                                            res_val = doc.xref_get_key(page_xref, "Resources")
+                                            temp_page.clean_contents()
+                                            contents_list = temp_page.get_contents()
+                                            if contents_list:
+                                                contents_xref = contents_list[0]
+                                                contents_stream = doc.xref_stream(contents_xref)
+                                                new_xobj_xref = doc.get_new_xref()
+                                                bbox = temp_page.rect
+                                                bbox_str = f"[{bbox.x0} {bbox.y0} {bbox.x1} {bbox.y1}]"
                                                 
+                                                xobj_dict = f"<< /Type /XObject /Subtype /Form /BBox {bbox_str} /Matrix [1 0 0 1 0 0] "
+                                                if res_val[0] == "dict":
+                                                    xobj_dict += f"/Resources {res_val[1]} "
+                                                xobj_dict += ">>"
+                                                
+                                                doc.update_object(new_xobj_xref, xobj_dict)
+                                                doc.update_stream(new_xobj_xref, contents_stream)
+                                                
+                                                ap_val = f"<< /N {new_xobj_xref} 0 R >>"
+                                                
+                                        if ap_val:
+                                            # Strip the /AS key from target annot so it doesn't look for a state
+                                            doc.xref_set_key(annot.xref, "AS", "null")
+                                            doc.xref_set_key(annot.xref, "AP", ap_val)
+                                            add_log(f"Successfully applied vector shape '{base_shape}' to stamp {u['stamp_id']}")
+                                        else:
+                                            add_log(f"Shape '{base_shape}' had no vectors to apply.")
+                                            
                                         # Delete the temporary page
                                         doc.delete_page(-1)
                                     except Exception as e:
