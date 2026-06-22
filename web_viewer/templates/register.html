@@ -304,10 +304,20 @@
             btn.classList.add('loading');
         });
 
-        // ── Auto focus ───────────────────────────────────────────────────
+        // ── Auto focus & Prefill invite code from URL ─────────────────────
         window.addEventListener('DOMContentLoaded', () => {
             const u = document.getElementById('username');
             if (!u.value) u.focus();
+            
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const inviteInput = document.getElementById('invite-code');
+            if (code && inviteInput) {
+                inviteInput.value = code;
+                inviteInput.readOnly = true;
+                inviteInput.style.opacity = '0.7';
+                inviteInput.style.cursor = 'not-allowed';
+            }
         });
 
         // ── Handle server success redirect (check URL param) ─────────────

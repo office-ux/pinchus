@@ -347,9 +347,15 @@ def register():
         # Validate invite code
         config = load_config()
         active_code = config.get("invite_code", "")
+        import time
+        created_at = config.get("invite_code_created_at", 0)
         
         if not active_code:
             error = "Registration is currently closed. Ask the administrator for an invitation."
+        elif time.time() - created_at > 86400:
+            config["invite_code"] = ""
+            save_config(config)
+            error = "This invitation link has expired (24h limit)."
         elif invite_code != active_code:
             error = "Invalid invitation code."
         # Validate inputs
@@ -2450,6 +2456,7 @@ def manage_invite_code():
         return jsonify({"error": "Unauthorized"}), 403
         
     config = load_config()
+    import time
     
     if request.method == "POST":
         import random
@@ -2457,10 +2464,36 @@ def manage_invite_code():
         chars = "".join(c for c in string.ascii_uppercase + string.digits if c not in "O0I1")
         new_code = "".join(random.choice(chars) for _ in range(8))
         config["invite_code"] = new_code
+        config["invite_code_created_at"] = time.time()
         save_config(config)
-        return jsonify({"success": True, "invite_code": new_code})
         
-    return jsonify({"invite_code": config.get("invite_code", "")})
+        base_url = request.host_url.rstrip('/')
+        invite_url = f"{base_url}/register?code={new_code}"
+        return jsonify({
+            "success": True, 
+            "invite_code": new_code, 
+            "invite_url": invite_url,
+            "expires_in_hours": 24
+        })
+        
+    invite_code = config.get("invite_code", "")
+    created_at = config.get("invite_code_created_at", 0)
+    base_url = request.host_url.rstrip('/')
+    
+    is_expired = False
+    if invite_code and (time.time() - created_at > 86400):
+        is_expired = True
+        config["invite_code"] = ""
+        save_config(config)
+        
+    invite_url = f"{base_url}/register?code={invite_code}" if invite_code and not is_expired else ""
+    expires_in_hours = max(0, int((created_at + 86400 - time.time()) / 3600)) if invite_code and not is_expired else 0
+    
+    return jsonify({
+        "invite_code": invite_code if not is_expired else "",
+        "invite_url": invite_url,
+        "expires_in_hours": expires_in_hours
+    })
 
 @app.route("/api/groups/<path:project_name>", methods=["GET"])
 @api_login_required

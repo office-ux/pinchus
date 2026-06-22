@@ -252,11 +252,15 @@
                     <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">Pull the latest code from GitHub and restart the server automatically.</div>
                     <button class="btn-primary" id="settings-update-btn" style="background: #f44336; width: 100%; padding: 10px 14px; border-radius: var(--radius-sm); border: none; color: white; font-weight: 500; cursor: pointer; margin-bottom: 16px;">Update Server</button>
 
-                    <label style="color: var(--text-primary); margin-top: 12px; display: block;">Registration Invite Code</label>
-                    <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">Generate a single-use code to allow new users to register.</div>
-                    <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
-                        <input type="text" id="settings-invite-code-input" readonly placeholder="No active code" style="flex: 1; background: var(--modal-input-bg); border: 1px solid var(--modal-input-border); color: var(--text-primary); padding: 10px 14px; border-radius: var(--radius-sm); font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none; text-align: center; font-weight: bold; letter-spacing: 1px;">
-                        <button class="btn-primary" id="settings-invite-code-btn" style="background: var(--accent-color, #2196F3); border: none; padding: 10px 14px; color: white; border-radius: var(--radius-sm); cursor: pointer; font-weight: 500;">Generate</button>
+                    <label style="color: var(--text-primary); margin-top: 12px; display: block;">Registration Invite Link</label>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">Generate a link that expires in 24 hours. Valid for 1 registration.</div>
+                    <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px;">
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input type="text" id="settings-invite-code-input" readonly placeholder="No active invite link" style="flex: 1; background: var(--modal-input-bg); border: 1px solid var(--modal-input-border); color: var(--text-primary); padding: 10px 14px; border-radius: var(--radius-sm); font-family: 'Inter', sans-serif; font-size: 0.90rem; outline: none;">
+                            <button class="btn-primary" id="settings-invite-code-btn" style="background: var(--accent-color, #2196F3); border: none; padding: 10px 14px; color: white; border-radius: var(--radius-sm); cursor: pointer; font-weight: 500;">Generate</button>
+                        </div>
+                        <button class="btn-primary" id="settings-invite-copy-btn" style="background: #22c55e; border: none; padding: 10px 14px; color: white; border-radius: var(--radius-sm); cursor: pointer; font-weight: 500; display: none; width: 100%;">Copy Invitation Link</button>
+                        <div id="settings-invite-expiry" style="font-size: 0.80rem; color: #eab308; text-align: center; display: none; margin-top: 2px;"></div>
                     </div>
                 </div>
                 {% endif %}
@@ -754,11 +758,25 @@
             } catch (e) {}
 
             const inviteCodeInput = document.getElementById('settings-invite-code-input');
+            const inviteCopyBtn = document.getElementById('settings-invite-copy-btn');
+            const inviteExpiry = document.getElementById('settings-invite-expiry');
+            
             if (inviteCodeInput) {
                 try {
                     const res = await fetch('/api/invite_code');
                     const data = await res.json();
-                    inviteCodeInput.value = data.invite_code || '';
+                    if (data.invite_url) {
+                        inviteCodeInput.value = data.invite_url;
+                        if (inviteCopyBtn) inviteCopyBtn.style.display = 'block';
+                        if (inviteExpiry) {
+                            inviteExpiry.textContent = `Expires in approx. ${data.expires_in_hours} hours.`;
+                            inviteExpiry.style.display = 'block';
+                        }
+                    } else {
+                        inviteCodeInput.value = '';
+                        if (inviteCopyBtn) inviteCopyBtn.style.display = 'none';
+                        if (inviteExpiry) inviteExpiry.style.display = 'none';
+                    }
                 } catch (e) {}
             }
 
@@ -820,6 +838,9 @@
 
         const settingsInviteCodeBtn = document.getElementById('settings-invite-code-btn');
         const settingsInviteCodeInput = document.getElementById('settings-invite-code-input');
+        const settingsInviteCopyBtn = document.getElementById('settings-invite-copy-btn');
+        const settingsInviteExpiry = document.getElementById('settings-invite-expiry');
+
         if (settingsInviteCodeBtn && settingsInviteCodeInput) {
             settingsInviteCodeBtn.addEventListener('click', async () => {
                 settingsInviteCodeBtn.disabled = true;
@@ -828,10 +849,15 @@
                     const res = await fetch('/api/invite_code', { method: 'POST' });
                     const data = await res.json();
                     if (data.success) {
-                        settingsInviteCodeInput.value = data.invite_code;
-                        showToast('New invite code generated');
+                        settingsInviteCodeInput.value = data.invite_url;
+                        if (settingsInviteCopyBtn) settingsInviteCopyBtn.style.display = 'block';
+                        if (settingsInviteExpiry) {
+                            settingsInviteExpiry.textContent = `Expires in approx. ${data.expires_in_hours} hours.`;
+                            settingsInviteExpiry.style.display = 'block';
+                        }
+                        showToast('New invite link generated');
                     } else {
-                        showToast('Failed to generate code', 'error');
+                        showToast('Failed to generate link', 'error');
                     }
                 } catch (e) {
                     showToast('Error communicating with server', 'error');
@@ -839,6 +865,20 @@
                     settingsInviteCodeBtn.disabled = false;
                     settingsInviteCodeBtn.textContent = 'Generate';
                 }
+            });
+        }
+
+        if (settingsInviteCopyBtn && settingsInviteCodeInput) {
+            settingsInviteCopyBtn.addEventListener('click', () => {
+                const url = settingsInviteCodeInput.value;
+                if (!url) return;
+                navigator.clipboard.writeText(url).then(() => {
+                    showToast('Link copied to clipboard');
+                }).catch(() => {
+                    settingsInviteCodeInput.select();
+                    document.execCommand('copy');
+                    showToast('Link copied to clipboard');
+                });
             });
         }
 
