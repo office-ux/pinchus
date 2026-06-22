@@ -342,9 +342,18 @@ def register():
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         confirm  = request.form.get("confirm_password", "")
+        invite_code = request.form.get("invite_code", "").strip()
 
+        # Validate invite code
+        config = load_config()
+        active_code = config.get("invite_code", "")
+        
+        if not active_code:
+            error = "Registration is currently closed. Ask the administrator for an invitation."
+        elif invite_code != active_code:
+            error = "Invalid invitation code."
         # Validate inputs
-        if not username or not password or not confirm:
+        elif not username or not password or not confirm or not invite_code:
             error = "Please fill in all fields."
         elif len(username) < 3:
             error = "Username must be at least 3 characters."
@@ -364,6 +373,10 @@ def register():
                 hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
                 users.append({"username": username, "password_hash": hashed})
                 try:
+                    # Clear used invite code
+                    config["invite_code"] = ""
+                    save_config(config)
+                    
                     with open(USERS_PATH, "w", encoding="utf-8") as f:
                         json.dump(users, f, indent=2)
                     return redirect(url_for("register") + "?created=1")
@@ -2429,6 +2442,25 @@ def update_server():
             "success": False,
             "error": str(e)
         }), 500
+
+@app.route("/api/invite_code", methods=["GET", "POST"])
+@api_login_required
+def manage_invite_code():
+    if session.get("username") != "admin":
+        return jsonify({"error": "Unauthorized"}), 403
+        
+    config = load_config()
+    
+    if request.method == "POST":
+        import random
+        import string
+        chars = "".join(c for c in string.ascii_uppercase + string.digits if c not in "O0I1")
+        new_code = "".join(random.choice(chars) for _ in range(8))
+        config["invite_code"] = new_code
+        save_config(config)
+        return jsonify({"success": True, "invite_code": new_code})
+        
+    return jsonify({"invite_code": config.get("invite_code", "")})
 
 @app.route("/api/groups/<path:project_name>", methods=["GET"])
 @api_login_required

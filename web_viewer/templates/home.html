@@ -246,11 +246,20 @@
                         <option value="light" style="background: var(--modal-bg); color: var(--text-primary);">Light Mode</option>
                     </select>
                 </div>
+                {% if current_user == 'admin' %}
                 <div class="form-group" style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 16px;">
                     <label style="color: #f44336;">Developer Options</label>
                     <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">Pull the latest code from GitHub and restart the server automatically.</div>
-                    <button class="btn-primary" id="settings-update-btn" style="background: #f44336; width: 100%; padding: 10px 14px; border-radius: var(--radius-sm); border: none; color: white; font-weight: 500; cursor: pointer;">Update Server</button>
+                    <button class="btn-primary" id="settings-update-btn" style="background: #f44336; width: 100%; padding: 10px 14px; border-radius: var(--radius-sm); border: none; color: white; font-weight: 500; cursor: pointer; margin-bottom: 16px;">Update Server</button>
+
+                    <label style="color: var(--text-primary); margin-top: 12px; display: block;">Registration Invite Code</label>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px;">Generate a single-use code to allow new users to register.</div>
+                    <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 8px;">
+                        <input type="text" id="settings-invite-code-input" readonly placeholder="No active code" style="flex: 1; background: var(--modal-input-bg); border: 1px solid var(--modal-input-border); color: var(--text-primary); padding: 10px 14px; border-radius: var(--radius-sm); font-family: 'Inter', sans-serif; font-size: 0.95rem; outline: none; text-align: center; font-weight: bold; letter-spacing: 1px;">
+                        <button class="btn-primary" id="settings-invite-code-btn" style="background: var(--accent-color, #2196F3); border: none; padding: 10px 14px; color: white; border-radius: var(--radius-sm); cursor: pointer; font-weight: 500;">Generate</button>
+                    </div>
                 </div>
+                {% endif %}
             </div>
             <div class="modal-footer">
                 <button class="btn-cancel" id="settings-cancel-btn">Close</button>
@@ -743,6 +752,16 @@
                     localStorage.setItem('app_theme', data.theme);
                 }
             } catch (e) {}
+
+            const inviteCodeInput = document.getElementById('settings-invite-code-input');
+            if (inviteCodeInput) {
+                try {
+                    const res = await fetch('/api/invite_code');
+                    const data = await res.json();
+                    inviteCodeInput.value = data.invite_code || '';
+                } catch (e) {}
+            }
+
             openModal(settingsModal);
         });
 
@@ -795,6 +814,30 @@
                     setTimeout(() => {
                         window.location.reload();
                     }, 5000);
+                }
+            });
+        }
+
+        const settingsInviteCodeBtn = document.getElementById('settings-invite-code-btn');
+        const settingsInviteCodeInput = document.getElementById('settings-invite-code-input');
+        if (settingsInviteCodeBtn && settingsInviteCodeInput) {
+            settingsInviteCodeBtn.addEventListener('click', async () => {
+                settingsInviteCodeBtn.disabled = true;
+                settingsInviteCodeBtn.textContent = '...';
+                try {
+                    const res = await fetch('/api/invite_code', { method: 'POST' });
+                    const data = await res.json();
+                    if (data.success) {
+                        settingsInviteCodeInput.value = data.invite_code;
+                        showToast('New invite code generated');
+                    } else {
+                        showToast('Failed to generate code', 'error');
+                    }
+                } catch (e) {
+                    showToast('Error communicating with server', 'error');
+                } finally {
+                    settingsInviteCodeBtn.disabled = false;
+                    settingsInviteCodeBtn.textContent = 'Generate';
                 }
             });
         }

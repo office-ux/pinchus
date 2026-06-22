@@ -181,6 +181,21 @@
                         </div>
                     </div>
 
+                    <!-- Invite Code -->
+                    <div class="form-group" style="margin-bottom: 28px;">
+                        <label for="invite-code">Invitation Code</label>
+                        <div class="input-wrapper">
+                            <input
+                                type="text"
+                                id="invite-code"
+                                name="invite_code"
+                                placeholder="Enter invitation code from admin"
+                                required
+                            >
+                            <span class="input-icon">🔑</span>
+                        </div>
+                    </div>
+
                     <button type="submit" class="btn-login" id="btn-submit">
                         <span class="btn-text">Create Account</span>
                         <span class="btn-spinner">
@@ -279,8 +294,9 @@
             const u  = document.getElementById('username').value.trim();
             const pw = pwInput.value;
             const cp = confirmPw.value;
+            const ic = document.getElementById('invite-code').value.trim();
 
-            if (!u || !pw || !cp) { e.preventDefault(); showError('Please fill in all fields.'); return; }
+            if (!u || !pw || !cp || !ic) { e.preventDefault(); showError('Please fill in all fields.'); return; }
             if (u.length < 3)     { e.preventDefault(); showError('Username must be at least 3 characters.'); return; }
             if (pw.length < 6)    { e.preventDefault(); showError('Password must be at least 6 characters.'); return; }
             if (pw !== cp)        { e.preventDefault(); showError('Passwords do not match.'); return; }
