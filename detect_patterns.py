@@ -211,43 +211,98 @@ def cluster_items(items, max_dist):
     if not items:
         return []
     
+    grid = {}
     clusters = []
-    for item in items:
+    cluster_to_cells = {}
+    
+    def get_grid_cells(item):
         if item.get("shape_type") == "rect":
             x, y, w, h = item["x"], item["y"], item["width"], item["height"]
-            points = [(x, y), (x+w, y), (x+w, y+h), (x, y+h)]
+            pts = [(x, y), (x+w, y), (x+w, y+h), (x, y+h)]
         else:
-            points = item.get("points", [item["start"], item["end"]])
-            
+            pts = item.get("points", [item["start"], item["end"]])
+        
+        cells = set()
+        for p in pts:
+            cx = int(math.floor(p[0] / max_dist))
+            cy = int(math.floor(p[1] / max_dist))
+            cells.add((cx, cy))
+        return pts, cells
+
+    def are_points_close(pts1, pts2, d_limit):
+        for p1 in pts1:
+            for p2 in pts2:
+                dx = p1[0] - p2[0]
+                if abs(dx) > d_limit:
+                    continue
+                dy = p1[1] - p2[1]
+                if abs(dy) > d_limit:
+                    continue
+                if (dx*dx + dy*dy) <= d_limit*d_limit:
+                    return True
+        return False
+
+    for item in items:
+        pts, cells = get_grid_cells(item)
+        
+        candidate_cluster_indices = set()
+        for cx, cy in cells:
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    neighbor_cell = (cx + dx, cy + dy)
+                    if neighbor_cell in grid:
+                        candidate_cluster_indices.update(grid[neighbor_cell])
+        
         matched_clusters = []
-        for i, cluster in enumerate(clusters):
+        for idx in candidate_cluster_indices:
+            if not clusters[idx]:
+                continue
             is_close = False
-            for p1 in points:
-                for c_item in cluster:
-                    if c_item.get("shape_type") == "rect":
-                        cx, cy, cw, ch = c_item["x"], c_item["y"], c_item["width"], c_item["height"]
-                        c_points = [(cx, cy), (cx+cw, cy), (cx+cw, cy+ch), (cx, cy+ch)]
-                    else:
-                        c_points = c_item.get("points", [c_item["start"], c_item["end"]])
-                    for c_p in c_points:
-                        if matching_lines.dist(p1, c_p) <= max_dist:
-                            is_close = True
-                            break
-                    if is_close: break
-                if is_close: break
+            for c_item in clusters[idx]:
+                if c_item.get("shape_type") == "rect":
+                    cx, cy, cw, ch = c_item["x"], c_item["y"], c_item["width"], c_item["height"]
+                    c_pts = [(cx, cy), (cx+cw, cy), (cx+cw, cy+ch), (cx, cy+ch)]
+                else:
+                    c_pts = c_item.get("points", [c_item["start"], c_item["end"]])
+                
+                if are_points_close(pts, c_pts, max_dist):
+                    is_close = True
+                    break
             if is_close:
-                matched_clusters.append(i)
+                matched_clusters.append(idx)
         
         if not matched_clusters:
+            new_idx = len(clusters)
             clusters.append([item])
+            cluster_to_cells[new_idx] = set(cells)
+            for cell in cells:
+                grid.setdefault(cell, set()).add(new_idx)
         elif len(matched_clusters) == 1:
-            clusters[matched_clusters[0]].append(item)
+            matched_idx = matched_clusters[0]
+            clusters[matched_idx].append(item)
+            cluster_to_cells[matched_idx].update(cells)
+            for cell in cells:
+                grid.setdefault(cell, set()).add(matched_idx)
         else:
-            new_cluster = [item]
-            for i in sorted(matched_clusters, reverse=True):
-                new_cluster.extend(clusters.pop(i))
-            clusters.append(new_cluster)
-    return clusters
+            target_idx = matched_clusters[0]
+            clusters[target_idx].append(item)
+            cluster_to_cells[target_idx].update(cells)
+            for cell in cells:
+                grid.setdefault(cell, set()).add(target_idx)
+                
+            merged_indices = sorted(matched_clusters[1:], reverse=True)
+            for idx in merged_indices:
+                clusters[target_idx].extend(clusters[idx])
+                clusters[idx] = []
+                
+                cluster_to_cells[target_idx].update(cluster_to_cells[idx])
+                for cell in cluster_to_cells[idx]:
+                    if cell in grid:
+                        grid[cell].discard(idx)
+                        grid[cell].add(target_idx)
+                del cluster_to_cells[idx]
+                
+    return [c for c in clusters if c]
 
 
 def match_pattern(cluster, signature, scan_cfg):
