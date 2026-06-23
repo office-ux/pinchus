@@ -2473,19 +2473,36 @@ def update_server():
             check=True
         )
 
-        # Read systemd unit file if exists for debugging
+        # Read and modify systemd unit file to set a higher Gunicorn timeout
         service_content = ""
         service_path = "/etc/systemd/system/pinchus.service"
+        did_update_service = False
         if os.path.exists(service_path):
             try:
                 with open(service_path, "r") as f:
-                    service_content = f"\n\n--- pinchus.service ---\n{f.read()}"
+                    content = f.read()
+                
+                if "--timeout" not in content and "gunicorn" in content:
+                    import re
+                    pattern = r"(ExecStart=.*gunicorn\s+)"
+                    new_content = re.sub(pattern, r"\1--timeout 900 ", content)
+                    if new_content != content:
+                        with open(service_path, "w") as f:
+                            f.write(new_content)
+                        did_update_service = True
+                        service_content = f"\n\n--- pinchus.service updated ---\n{new_content}"
+                    else:
+                        service_content = f"\n\n--- pinchus.service (no regex match) ---\n{content}"
+                else:
+                    service_content = f"\n\n--- pinchus.service ---\n{content}"
             except Exception as e:
-                service_content = f"\n\n--- pinchus.service error ---\nCould not read service file: {e}"
+                service_content = f"\n\n--- pinchus.service error ---\nCould not modify/read service file: {e}"
 
         def restart_gunicorn():
             time.sleep(1)
             if os.name != 'nt':
+                if did_update_service:
+                    subprocess.run(["systemctl", "daemon-reload"])
                 subprocess.run(["systemctl", "restart", "pinchus"])
 
         threading.Thread(target=restart_gunicorn).start()
