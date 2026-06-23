@@ -2473,6 +2473,16 @@ def update_server():
             check=True
         )
 
+        # Read systemd unit file if exists for debugging
+        service_content = ""
+        service_path = "/etc/systemd/system/pinchus.service"
+        if os.path.exists(service_path):
+            try:
+                with open(service_path, "r") as f:
+                    service_content = f"\n\n--- pinchus.service ---\n{f.read()}"
+            except Exception as e:
+                service_content = f"\n\n--- pinchus.service error ---\nCould not read service file: {e}"
+
         def restart_gunicorn():
             time.sleep(1)
             if os.name != 'nt':
@@ -2482,7 +2492,7 @@ def update_server():
 
         return jsonify({
             "success": True,
-            "output": pull_res.stdout
+            "output": pull_res.stdout + service_content
         })
     except Exception as e:
         import traceback
