@@ -80,6 +80,11 @@
                 "name": "#",
                 "value": "",
                 "type": "string"
+            },
+            {
+                "name": "cfm",
+                "type": "string",
+                "value": ""
             }
         ],
         "air_outlet_fields": [
@@ -87,6 +92,11 @@
                 "name": "#",
                 "value": "",
                 "type": "string"
+            },
+            {
+                "name": "CFM",
+                "type": "string",
+                "value": ""
             }
         ],
         "system_column_order": [
@@ -94,14 +104,17 @@
             "PDF File",
             "Page",
             "Pattern",
-            "#"
+            "#",
+            "cfm"
         ],
         "air_outlet_column_order": [
+            "UUID",
             "PDF File",
             "Page",
             "Pattern",
             "#",
-            "UUID"
+            "CFM"
         ]
-    }
+    },
+    "auto_scroll_speed": 0.17
 }

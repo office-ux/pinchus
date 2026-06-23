@@ -12,7 +12,14 @@ self.onmessage = async function(e) {
         try {
             let doc = documentCache.get(url);
             if (!doc) {
-                doc = await pdfjsLib.getDocument(url).promise;
+                const loadingTask = pdfjsLib.getDocument(url);
+                loadingTask.onProgress = function(progressData) {
+                    if (progressData.total > 0) {
+                        const percent = (progressData.loaded / progressData.total) * 100;
+                        self.postMessage({ type: 'RENDER_PROGRESS', pageNum, percent, loaded: progressData.loaded, total: progressData.total });
+                    }
+                };
+                doc = await loadingTask.promise;
                 documentCache.set(url, doc);
             }
 

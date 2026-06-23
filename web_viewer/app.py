@@ -7,6 +7,7 @@ import shutil
 import threading
 import traceback
 import bcrypt
+import uuid
 try:
     import pythoncom
     import win32com.client
@@ -615,6 +616,12 @@ def get_page_drawings(filename, page_num):
     pdf_path = get_pdf_path(filename)
     if not pdf_path or not os.path.exists(pdf_path):
         return jsonify({"error": "File not found"}), 404
+    cache_dir = pdf_path + ".cache"
+    cache_file = os.path.join(cache_dir, f"drawings_page_{page_num}.json")
+    
+    if os.path.exists(cache_file):
+        from flask import send_file
+        return send_file(cache_file, mimetype="application/json")
         
     try:
         doc = fitz.open(pdf_path)
@@ -681,6 +688,29 @@ def get_page_drawings(filename, page_num):
                         "color_hex": color_hex,
                         "fill_color_hex": fill_color_hex
                     })
+                elif item_type == "qu":
+                    quad = item[1] * rot_matrix
+                    ul, ur, ll, lr = quad.ul, quad.ur, quad.ll, quad.lr
+                    d1 = math.hypot(ur.x - ul.x, ur.y - ul.y)
+                    d2 = math.hypot(lr.x - ur.x, lr.y - ur.y)
+                    d3 = math.hypot(ll.x - lr.x, ll.y - lr.y)
+                    d4 = math.hypot(ul.x - ll.x, ul.y - ll.y)
+                    length = d1 + d2 + d3 + d4
+                    serialized_drawings.append({
+                        "id": f"{d_idx}_{i_idx}",
+                        "type": "Polygon",
+                        "points": [
+                            [ul.x, ul.y],
+                            [ur.x, ur.y],
+                            [lr.x, lr.y],
+                            [ll.x, ll.y]
+                        ],
+                        "length": round(length, 4),
+                        "thickness": round(line_weight, 4),
+                        "color": color_rgb,
+                        "color_hex": color_hex,
+                        "fill_color_hex": fill_color_hex
+                    })
                 elif item_type == "c":
                     p1 = item[1] * rot_matrix
                     p2 = item[2] * rot_matrix
@@ -728,11 +758,20 @@ def get_page_drawings(filename, page_num):
                 })
         
         doc.close()
-        return jsonify({
+        
+        response_data = {
             "page_bounds": page_bounds,
             "drawings": serialized_drawings,
             "links": serialized_links
-        })
+        }
+        
+        os.makedirs(cache_dir, exist_ok=True)
+        temp_cache_file = os.path.join(cache_dir, f"drawings_page_{page_num}_{uuid.uuid4().hex}.tmp")
+        with open(temp_cache_file, "w", encoding="utf-8") as f:
+            json.dump(response_data, f)
+        os.replace(temp_cache_file, cache_file)
+            
+        return jsonify(response_data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1116,6 +1155,8 @@ def update_config():
         cfg = load_config()
         if "theme" in data:
             cfg["theme"] = data["theme"]
+        if "auto_scroll_speed" in data:
+            cfg["auto_scroll_speed"] = float(data["auto_scroll_speed"])
             
         save_config(cfg)
         return jsonify({"success": True, "theme": cfg.get("theme")})
@@ -1372,6 +1413,8 @@ def get_pdf_stamps(filename):
                         if meta.get("full_pattern_name"):
                             stamp_data["pattern_name"] = meta["full_pattern_name"]
                             # Intentionally NOT overriding stamp_data["name"] so the original tag data/name is preserved.
+                        if meta.get("fields"):
+                            stamp_data["fields"] = meta["fields"]
                     except Exception:
                         pass
                     stamps.append(stamp_data)

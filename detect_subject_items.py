@@ -280,22 +280,23 @@ def parse_appearance_stream(stream):
                 x = pop_number()
                 stack.clear()
                 p0 = transform_point(x, y)
-                p1 = transform_point(x + width, y)
                 p2 = transform_point(x + width, y + height)
-                p3 = transform_point(x, y + height)
-                rect_points = [(p0, p1), (p1, p2), (p2, p3), (p3, p0)]
-                path_lines += 4
-                for start, end in rect_points:
-                    length = math.hypot(end[0] - start[0], end[1] - start[1])
-                    path_lengths.append(length)
-                    path_segments.append({
-                        "start": start,
-                        "end": end,
-                        "length": length,
-                        "line_weight": line_weight,
-                        "effective_line_weight": effective_line_weight(),
-                        "stroke_color": stroke_color,
-                    })
+                perimeter = 2 * (abs(p2[0] - p0[0]) + abs(p2[1] - p0[1]))
+                path_lines += 1
+                path_lengths.append(perimeter)
+                path_segments.append({
+                    "shape_type": "rect",
+                    "start": p0,
+                    "end": p2,
+                    "x": p0[0],
+                    "y": p0[1],
+                    "width": p2[0] - p0[0],
+                    "height": p2[1] - p0[1],
+                    "length": perimeter,
+                    "line_weight": line_weight,
+                    "effective_line_weight": effective_line_weight(),
+                    "stroke_color": stroke_color,
+                })
                 path_open = True
                 current_point = p0
                 start_point = p0
@@ -443,12 +444,13 @@ def load_pdf_pattern_matches(pdf_path):
 
         for vec in vectors:
             sub_segments = []
+            vec_type = vec.get("type", "")
             if "start" in vec and "end" in vec:
                 sub_segments.append((tuple(vec["start"]), tuple(vec["end"]), float(vec.get("length", 0))))
             elif "points" in vec:
                 pts = [tuple(p) for p in vec["points"]]
-                if len(pts) == 4:
-                    # Treat as Bezier Arc/Curve
+                if vec_type == "Arc/Curve" and len(pts) == 4:
+                    # Bezier cubic arc
                     p1, p2, p3, p4 = pts
                     chord = math.hypot(p4[0] - p1[0], p4[1] - p1[1])
                     hull = (math.hypot(p2[0] - p1[0], p2[1] - p1[1]) +
@@ -462,12 +464,20 @@ def load_pdf_pattern_matches(pdf_path):
                         "end": pts[3],
                         "length": approx_length
                     })
-                elif len(pts) >= 2:
-                    # Polyline breakdown
-                    for i in range(len(pts) - 1):
-                        p1, p2 = pts[i], pts[i+1]
-                        dist = math.hypot(p2[0]-p1[0], p2[1]-p1[1])
-                        sub_segments.append((p1, p2, dist))
+                elif len(pts) >= 3:
+                    # Polygon: keep as single cohesive shape (matches "qu" from iter_page_items)
+                    n = len(pts)
+                    perimeter = sum(
+                        math.hypot(pts[(i+1)%n][0]-pts[i][0], pts[(i+1)%n][1]-pts[i][1])
+                        for i in range(n)
+                    )
+                    sub_segments.append({
+                        "shape_type": "polygon",
+                        "points": pts,
+                        "start": pts[0],
+                        "end": pts[2] if len(pts) > 2 else pts[-1],
+                        "length": perimeter
+                    })
             elif "x" in vec and "y" in vec and "width" in vec and "height" in vec:
                 x, y, w, h = vec["x"], vec["y"], vec["width"], vec["height"]
                 sub_segments.append({
@@ -488,12 +498,12 @@ def load_pdf_pattern_matches(pdf_path):
 
             for item in sub_segments:
                 if isinstance(item, tuple):
-                    start_pt, end_pt, length = item
+                    start_pt, end_pt, seg_length = item
                     seg = {
                         "shape_type": "line",
                         "start": start_pt,
                         "end": end_pt,
-                        "length": length,
+                        "length": seg_length,
                         "line_weight": thickness,
                         "effective_line_weight": thickness,
                         "stroke_color": color,
@@ -504,11 +514,11 @@ def load_pdf_pattern_matches(pdf_path):
                     seg["effective_line_weight"] = thickness
                     seg["stroke_color"] = color
                 segments.append(seg)
-                lengths.append(length)
+                lengths.append(seg["length"])
 
                 key = (thickness, color)
                 styles_map[key]["count"] += 1
-                styles_map[key]["lengths"].append(length)
+                styles_map[key]["lengths"].append(seg["length"])
                 styles_map[key]["segments"].append(seg)
 
         styles = [
@@ -609,11 +619,12 @@ def scan_pdf(pdf_path, targets):
                     
                     for vec in vectors:
                         sub_segments = []
+                        vec_type = vec.get("type", "")
                         if "start" in vec and "end" in vec:
                             sub_segments.append((tuple(vec["start"]), tuple(vec["end"]), float(vec.get("length", 0))))
                         elif "points" in vec:
                             pts = [tuple(p) for p in vec["points"]]
-                            if len(pts) == 4:
+                            if vec_type == "Arc/Curve" and len(pts) == 4:
                                 p1, p2, p3, p4 = pts
                                 chord = math.hypot(p4[0] - p1[0], p4[1] - p1[1])
                                 hull = (math.hypot(p2[0] - p1[0], p2[1] - p1[1]) +
@@ -627,11 +638,20 @@ def scan_pdf(pdf_path, targets):
                                     "end": pts[3],
                                     "length": approx_length
                                 })
-                            elif len(pts) >= 2:
-                                for i in range(len(pts) - 1):
-                                    p1, p2 = pts[i], pts[i+1]
-                                    dist = math.hypot(p2[0]-p1[0], p2[1]-p1[1])
-                                    sub_segments.append((p1, p2, dist))
+                            elif len(pts) >= 3:
+                                # Polygon: keep as single cohesive shape (matches "qu" from iter_page_items)
+                                n = len(pts)
+                                perimeter = sum(
+                                    math.hypot(pts[(i+1)%n][0]-pts[i][0], pts[(i+1)%n][1]-pts[i][1])
+                                    for i in range(n)
+                                )
+                                sub_segments.append({
+                                    "shape_type": "polygon",
+                                    "points": pts,
+                                    "start": pts[0],
+                                    "end": pts[2] if len(pts) > 2 else pts[-1],
+                                    "length": perimeter
+                                })
                         elif "x" in vec and "y" in vec and "width" in vec and "height" in vec:
                             x, y, w, h = vec["x"], vec["y"], vec["width"], vec["height"]
                             sub_segments.append({

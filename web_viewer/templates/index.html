@@ -7,10 +7,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/styles.css?v=44">
-    <link rel="stylesheet" href="/static/css/stamp_modal.css?v=10">
-    <script src="/static/js/api_stamp.js?v=20"></script>
-    <script src="/static/js/canvas_vector_renderer.js?v=1"></script>
+    <link rel="stylesheet" href="/static/css/styles.css?v=47">
+    <link rel="stylesheet" href="/static/css/stamp_modal.css?v=16">
+    <script src="/static/js/api_stamp.js?v=26"></script>
+    <script src="/static/js/canvas_vector_renderer.js?v=6"></script>
     <script type="module">
   import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
   pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
@@ -42,6 +42,16 @@
                 applyTheme('auto');
             }
         });
+
+        window.APP_CONFIG = { auto_scroll_speed: 0.05 };
+        fetch('/api/config')
+            .then(res => res.json())
+            .then(data => {
+                if (data.auto_scroll_speed !== undefined) {
+                    window.APP_CONFIG.auto_scroll_speed = data.auto_scroll_speed;
+                }
+            })
+            .catch(err => console.error(err));
     </script>
 </head>
 <body>
@@ -287,31 +297,33 @@
                 
             </main>
 
-            <main id="data-viewer-container" class="data-viewer-container" style="display: none; flex-direction: column; padding: 20px; overflow: auto; flex: 1;">
-                <div class="data-tables-wrapper">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                        <h3 style="margin: 0;">🌀 Air Outlets</h3>
-                        <button id="btn-csv-air-outlets" class="btn small-btn" style="display: flex; align-items: center; gap: 6px;">
-                            <span>📥</span> Download CSV
-                        </button>
+            <main id="data-viewer-container" class="data-viewer-container" style="display: none; flex-direction: column; overflow: auto; flex: 1;">
+                <div class="data-tables-wrapper" style="padding: 20px;">
+                    <div class="data-table-section" style="position: relative; margin-bottom: 30px;">
+                        <div class="sticky-table-header" style="display: flex; justify-content: space-between; align-items: center; height: 40px; box-sizing: border-box; position: sticky; top: 0; background: var(--bg-dark); z-index: 10;">
+                            <h3 style="margin: 0;">🌀 Air Outlets</h3>
+                            <button id="btn-csv-air-outlets" class="btn small-btn" style="display: flex; align-items: center; gap: 6px;">
+                                <span>📥</span> Download CSV
+                            </button>
+                        </div>
+                        <div id="air-outlets-tables-container" style="display: flex; flex-direction: column; gap: 20px;">
+                            <!-- Dynamically populated by JS -->
+                        </div>
                     </div>
-                    <div class="table-scroll-container">
-                        <table id="table-air-outlets" class="data-table">
-                            <thead></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 30px; margin-bottom: 10px;">
-                        <h3 style="margin: 0;">⚙️ Systems</h3>
-                        <button id="btn-csv-systems" class="btn small-btn" style="display: flex; align-items: center; gap: 6px;">
-                            <span>📥</span> Download CSV
-                        </button>
-                    </div>
-                    <div class="table-scroll-container">
-                        <table id="table-systems" class="data-table">
-                            <thead></thead>
-                            <tbody></tbody>
-                        </table>
+
+                    <div class="data-table-section" style="position: relative;">
+                        <div class="sticky-table-header" style="display: flex; justify-content: space-between; align-items: center; height: 40px; box-sizing: border-box; position: sticky; top: 0; background: var(--bg-dark); z-index: 10;">
+                            <h3 style="margin: 0;">⚙️ Systems</h3>
+                            <button id="btn-csv-systems" class="btn small-btn" style="display: flex; align-items: center; gap: 6px;">
+                                <span>📥</span> Download CSV
+                            </button>
+                        </div>
+                        <div class="table-scroll-container">
+                            <table id="table-systems" class="data-table">
+                                <thead></thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </main>
@@ -566,6 +578,12 @@
                     </select>
                 </div>
                 <div class="form-group" style="margin-bottom: 16px;">
+                    <label for="select-renumber-field-name">Field Name:</label>
+                    <select id="select-renumber-field-name" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); height: 36px; box-sizing: border-box;">
+                        <option value="#">#</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom: 16px;">
                     <label for="select-renumber-group-field">Group Field:</label>
                     <select id="select-renumber-group-field" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); height: 36px; box-sizing: border-box;">
                         <option value="">All</option>
@@ -590,6 +608,10 @@
                 btnToggle.innerHTML = 'Engine: <b style="color: var(--neon-pink);">PDF.js</b>';
             } else if (currentRenderer === 'canvas') {
                 btnToggle.innerHTML = 'Engine: <b style="color: #10b981;">Hybrid Canvas</b>';
+            } else if (currentRenderer === 'wasm') {
+                btnToggle.innerHTML = 'Engine: <b style="color: #f59e0b;">WASM Native</b>';
+            } else if (currentRenderer === 'hybrid2') {
+                btnToggle.innerHTML = 'Engine: <b style="background:linear-gradient(90deg,#00ffc8,#00bfff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">⚡ Hybrid 2</b>';
             } else {
                 btnToggle.innerHTML = 'Engine: <b style="color: var(--neon-cyan);">Tiles</b>';
             }
@@ -600,6 +622,10 @@
                     nextRenderer = 'pdfjs';
                 } else if (currentRenderer === 'pdfjs') {
                     nextRenderer = 'canvas';
+                } else if (currentRenderer === 'canvas') {
+                    nextRenderer = 'wasm';
+                } else if (currentRenderer === 'wasm') {
+                    nextRenderer = 'hybrid2';
                 } else {
                     nextRenderer = 'legacy';
                 }
@@ -609,10 +635,23 @@
         });
 
         // Load correct script dynamically
+        let appScript = '/static/js/app.js?v=90';
+        if (currentRenderer === 'pdfjs') appScript = '/static/js/app_pdfjs.js?v=29';
+        else if (currentRenderer === 'wasm') appScript = '/static/js/wasm_engine/app_wasm.js?v=1';
+        else if (currentRenderer === 'hybrid2') appScript = '/static/js/hybrid2/app_hybrid2.js?v=1';
+
+        // Hybrid 2 also needs canvas_vector_renderer for hit-testing
+        if (currentRenderer === 'hybrid2') {
+            const cvr = document.createElement('script');
+            cvr.src = '/static/js/canvas_vector_renderer.js?v=4';
+            cvr.defer = true;
+            document.head.appendChild(cvr);
+        }
+
         const scriptsToLoad = [
-            currentRenderer === 'pdfjs' ? '/static/js/app_pdfjs.js?v=24' : '/static/js/app.js?v=83',
-            '/static/js/stamp_modal.js?v=11',
-            '/static/js/manage_tags.js?v=10'
+            appScript,
+            '/static/js/stamp_modal.js?v=12',
+            '/static/js/manage_tags.js?v=11'
         ];
 
         scriptsToLoad.forEach(src => {
@@ -740,8 +779,16 @@
                 </div>
             </div>
 
-            <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: auto;">
-                <button id="btn-save-tags-config" class="btn primary-btn">Save Configuration</button>
+            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: auto;">
+                <div style="display: flex; flex-direction: column; gap: 5px;">
+                    <button id="btn-hover-fields-toggle" class="btn secondary-btn" style="width: max-content;">👁️ Hover Fields</button>
+                    <div id="hover-fields-container" style="display: none; flex-direction: column; gap: 5px; border: 1px solid var(--border-color); padding: 10px; border-radius: 6px; max-height: 150px; overflow-y: auto; background: var(--bg-panel); position: absolute; bottom: 60px; z-index: 100;">
+                        <!-- Checkboxes will be injected here -->
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px;">
+                    <button id="btn-save-tags-config" class="btn primary-btn">Save Configuration</button>
+                </div>
             </div>
         </div>
     </div>
@@ -755,6 +802,7 @@
             const btnRunRenumber = document.getElementById('btn-run-renumber');
             const selectType = document.getElementById('select-renumber-type');
             const selectGroupField = document.getElementById('select-renumber-group-field');
+            const selectFieldName = document.getElementById('select-renumber-field-name');
 
             function closeRenumberModal() {
                 renumberModal.style.display = 'none';
@@ -791,6 +839,7 @@
                     const res = await fetch(`/api/projects/${encodeURIComponent(project)}/fields/${encodeURIComponent(stampType)}`);
                     if (res.ok) {
                         const fields = await res.json();
+                        
                         const currentVal = selectGroupField.value;
                         selectGroupField.innerHTML = '<option value="">All</option>';
                         fields.forEach(f => {
@@ -804,6 +853,21 @@
                         if (fields.includes(currentVal) && currentVal !== "#") {
                             selectGroupField.value = currentVal;
                         }
+
+                        // Populate Field Name dropdown
+                        const currentFieldVal = selectFieldName.value;
+                        selectFieldName.innerHTML = '';
+                        fields.forEach(f => {
+                            const opt = document.createElement('option');
+                            opt.value = f;
+                            opt.textContent = f;
+                            selectFieldName.appendChild(opt);
+                        });
+                        if (fields.includes(currentFieldVal)) {
+                            selectFieldName.value = currentFieldVal;
+                        } else if (fields.includes("#")) {
+                            selectFieldName.value = "#";
+                        }
                     }
                 } catch (e) {
                     console.error("Error loading fields:", e);
@@ -812,12 +876,14 @@
 
             selectType.addEventListener('change', loadRenumberFields);
             selectGroupField.addEventListener('focus', loadRenumberFields);
+            selectFieldName.addEventListener('focus', loadRenumberFields);
 
             btnRunRenumber.addEventListener('click', async () => {
                 const project = window.currentProject || '';
                 const pdf = window.currentPdf;
                 const stampType = selectType.value;
                 const groupField = selectGroupField.value;
+                const fieldName = selectFieldName.value;
 
                 if (!project || !pdf) {
                     alert("Please open a project and a PDF first.");
@@ -835,7 +901,8 @@
                         body: JSON.stringify({
                             pdf_path: pdf,
                             stamp_type: stampType,
-                            group_field: groupField
+                            group_field: groupField,
+                            field_name: fieldName
                         })
                     });
                     

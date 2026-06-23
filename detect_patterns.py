@@ -65,6 +65,11 @@ def get_unique_signatures(subject_matches):
                 base["points_rel"] = [(p[0] - base_x, p[1] - base_y) for p in pts]
                 base["start_rel"] = (pts[0][0] - base_x, pts[0][1] - base_y)
                 base["end_rel"] = (pts[3][0] - base_x, pts[3][1] - base_y)
+            elif shape_type == "polygon":
+                pts = seg["points"]
+                base["points_rel"] = [(p[0] - base_x, p[1] - base_y) for p in pts]
+                base["start_rel"] = (pts[0][0] - base_x, pts[0][1] - base_y)
+                base["end_rel"] = (pts[2][0] - base_x, pts[2][1] - base_y) if len(pts) > 2 else (pts[-1][0] - base_x, pts[-1][1] - base_y)
             else:
                 base["start_rel"] = (seg["start"][0] - base_x, seg["start"][1] - base_y)
                 base["end_rel"] = (seg["end"][0] - base_x, seg["end"][1] - base_y)
@@ -97,15 +102,16 @@ def get_unique_signatures(subject_matches):
                     }
                     if s["shape_type"] == "arc":
                         new_s["points_rel"] = [rotate_rel_point(p, angle) for p in s["points_rel"]]
+                    elif s["shape_type"] == "polygon":
+                        new_s["points_rel"] = [rotate_rel_point(p, angle) for p in s["points_rel"]]
                     temp_segs.append(new_s)
                 
                 rx, ry = temp_segs[0]["start_rel"]
                 for s in temp_segs:
                     s["start_rel"] = (s["start_rel"][0] - rx, s["start_rel"][1] - ry)
                     s["end_rel"] = (s["end_rel"][0] - rx, s["end_rel"][1] - ry)
-                    if s["shape_type"] == "arc":
-                        s["points_rel"] = [(p[0] - rx, p[1] - ry) for p in s["points_rel"]]
-                
+                    if s["shape_type"] in ("arc", "polygon"):
+                        s["points_rel"] = [(p[0] - rx, p[1] - ry) for p in s["points_rel"]]                
                 xs = [s["start_rel"][0] for s in temp_segs] + [s["end_rel"][0] for s in temp_segs]
                 ys = [s["start_rel"][1] for s in temp_segs] + [s["end_rel"][1] for s in temp_segs]
                 
@@ -180,6 +186,25 @@ def iter_page_items(page):
                     "line_weight": line_weight,
                     "stroke_color": stroke_color,
                 }
+            elif item[0] == "qu":
+                quad = item[1]
+                ul, ur, lr, ll = (quad.ul.x, quad.ul.y), (quad.ur.x, quad.ur.y), (quad.lr.x, quad.lr.y), (quad.ll.x, quad.ll.y)
+                pts = [ul, ur, lr, ll]
+                d1 = matching_lines.dist(ul, ur)
+                d2 = matching_lines.dist(ur, lr)
+                d3 = matching_lines.dist(lr, ll)
+                d4 = matching_lines.dist(ll, ul)
+                perimeter = d1 + d2 + d3 + d4
+                yield {
+                    "source": f"drawing {drawing_index}, item {item_index}",
+                    "shape_type": "polygon",
+                    "points": pts,
+                    "start": pts[0],
+                    "end": pts[2],
+                    "length": perimeter,
+                    "line_weight": line_weight,
+                    "stroke_color": stroke_color,
+                }
 
 
 def cluster_items(items, max_dist):
@@ -188,13 +213,22 @@ def cluster_items(items, max_dist):
     
     clusters = []
     for item in items:
-        points = item.get("points", [item["start"], item["end"]])
+        if item.get("shape_type") == "rect":
+            x, y, w, h = item["x"], item["y"], item["width"], item["height"]
+            points = [(x, y), (x+w, y), (x+w, y+h), (x, y+h)]
+        else:
+            points = item.get("points", [item["start"], item["end"]])
+            
         matched_clusters = []
         for i, cluster in enumerate(clusters):
             is_close = False
             for p1 in points:
                 for c_item in cluster:
-                    c_points = c_item.get("points", [c_item["start"], c_item["end"]])
+                    if c_item.get("shape_type") == "rect":
+                        cx, cy, cw, ch = c_item["x"], c_item["y"], c_item["width"], c_item["height"]
+                        c_points = [(cx, cy), (cx+cw, cy), (cx+cw, cy+ch), (cx, cy+ch)]
+                    else:
+                        c_points = c_item.get("points", [c_item["start"], c_item["end"]])
                     for c_p in c_points:
                         if matching_lines.dist(p1, c_p) <= max_dist:
                             is_close = True
@@ -279,6 +313,18 @@ def match_pattern(cluster, signature, scan_cfg):
                         l_pts = l["points"]
                         match_fwd = all(matching_lines.dist(l_pts[k], target_pts[k]) <= pos_tol for k in range(4))
                         match_rev = all(matching_lines.dist(l_pts[k], target_pts[3-k]) <= pos_tol for k in range(4))
+                        if match_fwd or match_rev:
+                            matched_items.append(l)
+                            remaining_cluster.pop(j)
+                            found_match = True
+                            break
+                    elif shape_type == "polygon":
+                        pts_rel = sig_seg["points_rel"]
+                        target_pts = [(p[0]+tx, p[1]+ty) for p in pts_rel]
+                        l_pts = l["points"]
+                        n = min(len(l_pts), len(target_pts))
+                        match_fwd = all(matching_lines.dist(l_pts[k], target_pts[k]) <= pos_tol for k in range(n))
+                        match_rev = all(matching_lines.dist(l_pts[k], target_pts[n-1-k]) <= pos_tol for k in range(n))
                         if match_fwd or match_rev:
                             matched_items.append(l)
                             remaining_cluster.pop(j)

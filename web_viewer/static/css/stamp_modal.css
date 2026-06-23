@@ -140,10 +140,10 @@
     display: flex;
     flex-direction: column;
     background: var(--bg-dark);
-    padding: 20px;
+    padding: 0;
     box-sizing: border-box;
     overflow-y: auto;
-    overflow-x: hidden;
+    overflow-x: auto;
 }
 
 .data-viewer-header {
@@ -172,13 +172,11 @@
 }
 
 .table-scroll-container {
-    overflow-x: auto;
     border: 1px solid var(--border-color);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.02);
     flex-shrink: 0;
     width: 100%;
-    max-width: 100%;
     min-width: 0;
 }
 
@@ -197,13 +195,16 @@
 }
 
 .data-table th {
-    background: var(--btn-bg);
+    background: #475569; /* Grey header */
     font-weight: 500;
-    color: var(--text-secondary);
+    color: #f8fafc; /* Lighter text for grey bg */
     position: sticky;
-    top: 0;
-    z-index: 10;
-    position: relative; /* for resizer absolute positioning */
+    top: 80px;
+    z-index: 9;
+}
+
+#table-systems th {
+    top: 40px;
 }
 
 /* Make Actions column sticky to the right */

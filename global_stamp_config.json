@@ -17,5 +17,10 @@
             "value": "AC 1",
             "result": "#3d89b8"
         }
+    ],
+    "hoverFields": [
+        "#",
+        "%",
+        "delted?"
     ]
 }

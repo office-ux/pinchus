@@ -45,6 +45,8 @@ def _init_project_db(conn: sqlite3.Connection, project: str):
                 name TEXT NOT NULL,
                 value TEXT,
                 type TEXT CHECK(type IN ("string", "number")) NOT NULL,
+                formula_expression TEXT,
+                conditional_formatting TEXT,
                 PRIMARY KEY (stamp_id, name),
                 FOREIGN KEY (stamp_id) REFERENCES stamps(id) ON DELETE CASCADE
             );
@@ -78,6 +80,16 @@ def _init_project_db(conn: sqlite3.Connection, project: str):
             cur.execute("ALTER TABLE stamps ADD COLUMN pdf_uuid TEXT")
         except sqlite3.OperationalError:
             pass
+            
+        # Migration: add formula_expression
+        try:
+            cur.execute("ALTER TABLE stamp_fields ADD COLUMN formula_expression TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            cur.execute("ALTER TABLE stamps ADD COLUMN pdf_uuid TEXT")
+        except sqlite3.OperationalError:
+            pass
         
         # Migration: add pattern_name
         try:
@@ -88,6 +100,12 @@ def _init_project_db(conn: sqlite3.Connection, project: str):
         # Migration: add stamp_uuid
         try:
             cur.execute("ALTER TABLE stamps ADD COLUMN stamp_uuid TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+        # Migration: add conditional_formatting
+        try:
+            cur.execute("ALTER TABLE stamp_fields ADD COLUMN conditional_formatting TEXT")
         except sqlite3.OperationalError:
             pass
         
@@ -188,8 +206,8 @@ def get_stamp_metadata(project: str, stamp_id: int) -> Dict[str, Any]:
                     
                 for f in defaults:
                     cur.execute(
-                        "INSERT INTO stamp_fields (stamp_id, name, value, type) VALUES (?,?,?,?)",
-                        (stamp_id, f.get("name", ""), f.get("value", ""), f.get("type", "string"))
+                        "INSERT INTO stamp_fields (stamp_id, name, value, type, formula_expression, conditional_formatting) VALUES (?,?,?,?,?,?)",
+                        (stamp_id, f.get("name", ""), f.get("value", ""), f.get("type", "string"), f.get("formula_expression", ""), f.get("conditional_formatting", ""))
                     )
                 conn.commit()
                 cur.execute("SELECT * FROM stamp_fields WHERE stamp_id=?", (stamp_id,))
@@ -253,9 +271,12 @@ def upsert_fields(project: str, stamp_id: int, fields: List[Dict[str, Any]]):
             cur = conn.cursor()
             cur.execute("DELETE FROM stamp_fields WHERE stamp_id=?", (stamp_id,))
             for f in fields:
+                t = f.get('type', 'string')
+                if t == 'formula':
+                    t = 'number'
                 cur.execute(
-                    "INSERT INTO stamp_fields (stamp_id, name, value, type) VALUES (?,?,?,?)",
-                    (stamp_id, f.get('name'), f.get('value'), f.get('type', 'string'))
+                    "INSERT INTO stamp_fields (stamp_id, name, value, type, formula_expression, conditional_formatting) VALUES (?,?,?,?,?,?)",
+                    (stamp_id, f.get('name'), f.get('value'), t, f.get('formula_expression'), f.get('conditional_formatting'))
                 )
             conn.commit()
         finally:
@@ -357,18 +378,19 @@ def get_all_project_data(project: str) -> Dict[str, List[Dict[str, Any]]]:
             cur = conn.cursor()
             cur.execute("SELECT id, pdf_path, page, xref, stamp_type, pdf_name, pdf_uuid, pattern_name, stamp_uuid FROM stamps WHERE project=?", (project,))
             stamps_rows = cur.fetchall()
-            stamps_dict = {r["id"]: {**dict(r), "fields": {}} for r in stamps_rows}
+            stamps_dict = {r["id"]: {**dict(r), "fields": {}, "conditional_formatting": {}} for r in stamps_rows}
             
             stamp_ids = list(stamps_dict.keys())
             if not stamp_ids:
                 return {"air_outlets": [], "systems": []}
                 
             placeholders = ",".join("?" * len(stamp_ids))
-            cur.execute(f"SELECT stamp_id, name, value FROM stamp_fields WHERE stamp_id IN ({placeholders})", stamp_ids)
+            cur.execute(f"SELECT stamp_id, name, value, conditional_formatting FROM stamp_fields WHERE stamp_id IN ({placeholders})", stamp_ids)
             fields_rows = cur.fetchall()
             
             for r in fields_rows:
                 stamps_dict[r["stamp_id"]]["fields"][r["name"]] = r["value"]
+                stamps_dict[r["stamp_id"]]["conditional_formatting"][r["name"]] = r["conditional_formatting"]
                 
             air_outlets = []
             systems = []
@@ -395,7 +417,8 @@ def get_all_project_data(project: str) -> Dict[str, List[Dict[str, Any]]]:
                     "xref": s_data["xref"],
                     "pattern_name": base_pat,
                     "stamp_uuid": s_data.get("stamp_uuid") or "",
-                    "fields": s_data["fields"]
+                    "fields": s_data["fields"],
+                    "conditional_formatting": s_data["conditional_formatting"]
                 }
                 if s_data.get("stamp_type") == "system":
                     systems.append(res)
@@ -423,15 +446,16 @@ def get_pdf_stamps_with_fields(project: str, pdf_path: str, stamp_type: str) -> 
             if not stamps_rows:
                 return []
                 
-            stamps_dict = {r["id"]: {**dict(r), "fields": {}} for r in stamps_rows}
+            stamps_dict = {r["id"]: {**dict(r), "fields": {}, "conditional_formatting": {}} for r in stamps_rows}
             stamp_ids = list(stamps_dict.keys())
             
             placeholders = ",".join("?" * len(stamp_ids))
-            cur.execute(f"SELECT stamp_id, name, value FROM stamp_fields WHERE stamp_id IN ({placeholders})", stamp_ids)
+            cur.execute(f"SELECT stamp_id, name, value, conditional_formatting FROM stamp_fields WHERE stamp_id IN ({placeholders})", stamp_ids)
             fields_rows = cur.fetchall()
             
             for r in fields_rows:
                 stamps_dict[r["stamp_id"]]["fields"][r["name"]] = r["value"]
+                stamps_dict[r["stamp_id"]]["conditional_formatting"][r["name"]] = r["conditional_formatting"]
                 
             return list(stamps_dict.values())
         finally:
@@ -712,15 +736,16 @@ def get_all_stamps_for_rules(project: str) -> List[Dict[str, Any]]:
                 return []
 
             stamp_ids = [r["id"] for r in stamp_rows]
-            stamps = {r["id"]: {**dict(r), "fields": {}} for r in stamp_rows}
+            stamps = {r["id"]: {**dict(r), "fields": {}, "conditional_formatting": {}} for r in stamp_rows}
 
             placeholders = ",".join("?" * len(stamp_ids))
             cur.execute(
-                f"SELECT stamp_id, name, value FROM stamp_fields WHERE stamp_id IN ({placeholders})",
+                f"SELECT stamp_id, name, value, conditional_formatting FROM stamp_fields WHERE stamp_id IN ({placeholders})",
                 stamp_ids
             )
             for r in cur.fetchall():
                 stamps[r["stamp_id"]]["fields"][r["name"]] = r["value"]
+                stamps[r["stamp_id"]]["conditional_formatting"][r["name"]] = r["conditional_formatting"]
 
             return list(stamps.values())
         finally:

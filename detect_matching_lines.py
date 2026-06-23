@@ -130,21 +130,21 @@ def iter_page_lines(page):
                 }
             elif item[0] == "re":
                 rect = item[1]
-                points = [
-                    ((rect.x0, rect.y0), (rect.x1, rect.y0)),
-                    ((rect.x1, rect.y0), (rect.x1, rect.y1)),
-                    ((rect.x1, rect.y1), (rect.x0, rect.y1)),
-                    ((rect.x0, rect.y1), (rect.x0, rect.y0)),
-                ]
-                for rect_index, (start, end) in enumerate(points, 1):
-                    yield {
-                        "source": f"drawing {drawing_index}, item {item_index}, rect side {rect_index}",
-                        "start": start,
-                        "end": end,
-                        "length": dist(start, end),
-                        "line_weight": float(line_weight),
-                        "stroke_color": stroke_color,
-                    }
+                w = rect.x1 - rect.x0
+                h = rect.y1 - rect.y0
+                yield {
+                    "source": f"drawing {drawing_index}, item {item_index}",
+                    "shape_type": "rect",
+                    "x": rect.x0,
+                    "y": rect.y0,
+                    "width": w,
+                    "height": h,
+                    "start": (rect.x0, rect.y0),
+                    "end": (rect.x1, rect.y1),
+                    "length": 2 * (abs(w) + abs(h)),
+                    "line_weight": float(line_weight),
+                    "stroke_color": stroke_color,
+                }
 
 
 def format_line(line, matched_targets):
@@ -238,22 +238,37 @@ def save_layered_matching_pdf(pdf_path, page_matches, cfg):
 
     for page_match in page_matches:
         page = doc[page_match["page"] - 1]
-        for line in page_match["lines"]:
-            for target in sorted(set(line["matched_targets"])):
-                # We associate the line drawing with the target-specific layer.
-                # In PDF, a drawing can only belong to one OC directly.
-                # However, the inspector OCG layer is registered in the OCGs list of the document.
-                page.draw_line(
-                    line["start"],
-                    line["end"],
-                    color=color_map[target],
-                    width=scan_cfg["output_line_width"],
-                    overlay=True,
-                    stroke_opacity=0.85,
-                    oc=layers[target],
-                )
+        try:
+            for line in page_match["lines"]:
+                for target in sorted(set(line["matched_targets"])):
+                    if line.get("shape_type") == "rect":
+                        page.draw_rect(
+                            fitz.Rect(line["x"], line["y"], line["x"] + line["width"], line["y"] + line["height"]),
+                            color=color_map[target],
+                            width=scan_cfg["output_line_width"],
+                            overlay=True,
+                            stroke_opacity=0.85,
+                            oc=layers[target],
+                        )
+                    else:
+                        page.draw_line(
+                            line["start"],
+                            line["end"],
+                            color=color_map[target],
+                            width=scan_cfg["output_line_width"],
+                            overlay=True,
+                            stroke_opacity=0.85,
+                            oc=layers[target],
+                        )
+        except RuntimeError as e:
+            print(f"Failed to draw on page {page_match['page']} due to PDF corruption: {e}")
+            pass
 
-    doc.save(output_path, garbage=4, deflate=True)
+    try:
+        doc.save(output_path, garbage=4, deflate=True)
+    except RuntimeError as e:
+        print(f"Failed to save PDF due to internal corruption: {e}")
+        return None
     doc.close()
 
     print(

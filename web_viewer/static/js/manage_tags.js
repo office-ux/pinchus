@@ -157,7 +157,8 @@ function initManageTags() {
     
     let tagsConfig = {
         uploadedStamps: [],
-        rules: []
+        rules: [],
+        hoverFields: []
     };
     
     let globalTargets = [];
@@ -587,10 +588,17 @@ function initManageTags() {
             });
         });
 
+        const hoverFields = [];
+        document.querySelectorAll('.hover-field-checkbox:checked').forEach(cb => {
+            hoverFields.push(cb.value);
+        });
+
         const newConfig = {
             uploadedStamps: tagsConfig.uploadedStamps,
-            rules: rules
+            rules: rules,
+            hoverFields: hoverFields
         };
+        window.globalTagsConfig = newConfig;
 
         try {
             const res = await fetch(`/api/manage_tags/config?project=${encodeURIComponent(projectName)}`, {
@@ -733,6 +741,133 @@ function initManageTags() {
                 shapeRulesContainer.innerHTML = '';
                 colorRulesContainer.innerHTML = '';
                 tagsConfig.rules.forEach(rule => addRuleRow(rule));
+
+                // Populate Hover Fields
+                const hoverContainer = document.getElementById('hover-fields-container');
+                if (hoverContainer) {
+                    hoverContainer.innerHTML = '';
+                    const allFields = projectFieldsData.fields || [];
+                    if (allFields.length === 0) {
+                        hoverContainer.innerHTML = '<span style="color: var(--text-secondary); font-size: 0.85rem;">No fields available.</span>';
+                    } else {
+                        const orderedFields = [];
+                        const configuredFields = tagsConfig.hoverFields || [];
+                        configuredFields.forEach(f => {
+                            if (allFields.includes(f)) orderedFields.push(f);
+                        });
+                        allFields.forEach(f => {
+                            if (!orderedFields.includes(f)) orderedFields.push(f);
+                        });
+
+                        function updateHoverFieldsPreview() {
+                            const currentHoverFields = [];
+                            hoverContainer.querySelectorAll('.hover-field-checkbox:checked').forEach(c => {
+                                currentHoverFields.push(c.value);
+                            });
+                            if (!window.globalTagsConfig) window.globalTagsConfig = { hoverFields: [] };
+                            window.globalTagsConfig.hoverFields = currentHoverFields;
+                            if (window.redrawStampVisuals) window.redrawStampVisuals();
+                        }
+
+                        orderedFields.forEach(f => {
+                            const wrapper = document.createElement('div');
+                            wrapper.className = 'hover-field-item';
+                            wrapper.draggable = true;
+                            wrapper.style.display = 'flex';
+                            wrapper.style.alignItems = 'center';
+                            wrapper.style.gap = '6px';
+                            wrapper.style.padding = '4px 8px';
+                            wrapper.style.margin = '2px 0';
+                            wrapper.style.border = '1px solid transparent';
+                            wrapper.style.borderRadius = '4px';
+                            wrapper.style.cursor = 'grab';
+
+                            wrapper.addEventListener('dragstart', (e) => {
+                                e.dataTransfer.setData('text/plain', f);
+                                wrapper.style.opacity = '0.5';
+                                wrapper.classList.add('dragging');
+                            });
+                            wrapper.addEventListener('dragend', () => {
+                                wrapper.style.opacity = '1';
+                                wrapper.classList.remove('dragging');
+                                document.querySelectorAll('.hover-field-item').forEach(el => {
+                                    el.style.borderTop = '1px solid transparent';
+                                    el.style.borderBottom = '1px solid transparent';
+                                });
+                            });
+                            wrapper.addEventListener('dragover', (e) => {
+                                e.preventDefault();
+                                const draggingItem = hoverContainer.querySelector('.dragging');
+                                if (draggingItem && draggingItem !== wrapper) {
+                                    const bounding = wrapper.getBoundingClientRect();
+                                    const offset = bounding.y + (bounding.height / 2);
+                                    if (e.clientY - offset > 0) {
+                                        wrapper.style.borderBottom = '1px solid #3b82f6';
+                                        wrapper.style.borderTop = '1px solid transparent';
+                                    } else {
+                                        wrapper.style.borderTop = '1px solid #3b82f6';
+                                        wrapper.style.borderBottom = '1px solid transparent';
+                                    }
+                                }
+                            });
+                            wrapper.addEventListener('dragleave', () => {
+                                wrapper.style.borderTop = '1px solid transparent';
+                                wrapper.style.borderBottom = '1px solid transparent';
+                            });
+                            wrapper.addEventListener('drop', (e) => {
+                                e.preventDefault();
+                                wrapper.style.borderTop = '1px solid transparent';
+                                wrapper.style.borderBottom = '1px solid transparent';
+                                const draggingItem = hoverContainer.querySelector('.dragging');
+                                if (draggingItem && draggingItem !== wrapper) {
+                                    const bounding = wrapper.getBoundingClientRect();
+                                    const offset = bounding.y + (bounding.height / 2);
+                                    if (e.clientY - offset > 0) {
+                                        wrapper.after(draggingItem);
+                                    } else {
+                                        wrapper.before(draggingItem);
+                                    }
+                                    updateHoverFieldsPreview();
+                                }
+                            });
+
+                            const dragHandle = document.createElement('span');
+                            dragHandle.innerHTML = '&#9776;'; // Hamburger icon
+                            dragHandle.style.color = 'var(--text-secondary)';
+                            dragHandle.style.cursor = 'grab';
+                            dragHandle.style.marginRight = '4px';
+
+                            const lbl = document.createElement('label');
+                            lbl.style.display = 'flex';
+                            lbl.style.alignItems = 'center';
+                            lbl.style.gap = '6px';
+                            lbl.style.fontSize = '0.85rem';
+                            lbl.style.cursor = 'pointer';
+                            lbl.style.color = 'var(--text-primary)';
+                            lbl.style.margin = '0';
+                            lbl.style.flex = '1';
+                            
+                            const cb = document.createElement('input');
+                            cb.type = 'checkbox';
+                            cb.className = 'hover-field-checkbox';
+                            cb.value = f;
+                            if (tagsConfig.hoverFields && tagsConfig.hoverFields.includes(f)) {
+                                cb.checked = true;
+                            }
+                            cb.addEventListener('change', () => {
+                                updateHoverFieldsPreview();
+                            });
+                            
+                            lbl.appendChild(cb);
+                            lbl.appendChild(document.createTextNode(f));
+                            
+                            wrapper.appendChild(dragHandle);
+                            wrapper.appendChild(lbl);
+                            hoverContainer.appendChild(wrapper);
+                        });
+                    }
+                }
+                window.globalTagsConfig = tagsConfig;
             }
         } catch (e) {
             console.error('Error loading tags config:', e);
@@ -756,7 +891,38 @@ function initManageTags() {
             panel.style.display = 'none';
         }
     });
+
+    // Hover Fields toggle
+    const btnHoverToggle = document.getElementById('btn-hover-fields-toggle');
+    const hoverContainer = document.getElementById('hover-fields-container');
+    if (btnHoverToggle && hoverContainer) {
+        btnHoverToggle.addEventListener('click', () => {
+            if (hoverContainer.style.display === 'none') {
+                hoverContainer.style.display = 'flex';
+            } else {
+                hoverContainer.style.display = 'none';
+            }
+        });
+        
+        // Hide hover container when clicking outside of it and toggle
+        document.addEventListener('mousedown', (e) => {
+            if (hoverContainer.style.display === 'flex' && !hoverContainer.contains(e.target) && e.target !== btnHoverToggle) {
+                hoverContainer.style.display = 'none';
+            }
+        });
+    }
 }
+
+// Fetch global tags config on load for renderer
+fetch('/api/manage_tags/config')
+    .then(res => res.json())
+    .then(data => {
+        if (data.success && data.config) {
+            window.globalTagsConfig = data.config;
+            if (window.refreshStampVisuals) window.refreshStampVisuals();
+        }
+    })
+    .catch(err => console.error("Error fetching global tags config:", err));
 
 if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initManageTags);

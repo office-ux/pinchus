@@ -479,14 +479,25 @@ function initApp() {
             if (!pattern.vectors || pattern.vectors.length === 0) return;
             const patternType = normalizePatternType(pattern.type);
             
-            // Calculate bounding box
+            // Calculate bounding box across all vector types
             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            function expandBbox(x, y) {
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
             pattern.vectors.forEach(v => {
                 if (v.start && v.end) {
-                    minX = Math.min(minX, v.start[0], v.end[0]);
-                    minY = Math.min(minY, v.start[1], v.end[1]);
-                    maxX = Math.max(maxX, v.start[0], v.end[0]);
-                    maxY = Math.max(maxY, v.start[1], v.end[1]);
+                    expandBbox(v.start[0], v.start[1]);
+                    expandBbox(v.end[0], v.end[1]);
+                }
+                if (v.points && v.points.length) {
+                    v.points.forEach(p => expandBbox(p[0], p[1]));
+                }
+                if (v.x != null && v.y != null && v.width != null && v.height != null) {
+                    expandBbox(v.x, v.y);
+                    expandBbox(v.x + v.width, v.y + v.height);
                 }
             });
             
@@ -535,6 +546,7 @@ function initApp() {
     function overlayStampRects(pageNum, svg) {
         // Remove any previous stamp rects for this page
         svg.querySelectorAll('.stamp-highlight-rect').forEach(el => el.remove());
+        svg.querySelectorAll('.stamp-hover-text').forEach(el => el.remove());
 
         const stampsForPage = currentPdfStamps.filter(s => parseInt(s.page_num) === parseInt(pageNum));
         stampsForPage.forEach(stamp => {
@@ -594,8 +606,65 @@ function initApp() {
             });
 
             svg.appendChild(rect);
+
+            // Add hover text if configured
+            if (window.globalTagsConfig && window.globalTagsConfig.hoverFields && window.globalTagsConfig.hoverFields.length > 0 && stamp.fields) {
+                const hoverTexts = [];
+                const allFieldsObj = {};
+                stamp.fields.forEach(f => { allFieldsObj[f.name] = f.value; });
+                
+                window.globalTagsConfig.hoverFields.forEach(hf => {
+                    const field = stamp.fields.find(f => f.name === hf);
+                    if (field && field.value) {
+                        let fieldColor = null;
+                        if (field.conditional_formatting && window.evaluateConditionalFormattingRaw) {
+                            try {
+                                const rules = JSON.parse(field.conditional_formatting);
+                                fieldColor = window.evaluateConditionalFormattingRaw(field.value, rules, allFieldsObj);
+                            } catch(e) {}
+                        }
+                        hoverTexts.push({ text: `${hf}: ${field.value}`, color: fieldColor });
+                    }
+                });
+                
+                if (hoverTexts.length > 0) {
+                    const textEl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    textEl.setAttribute('x', stamp.rect[2] + 4);
+                    textEl.setAttribute('y', stamp.rect[1] + 10);
+                    textEl.setAttribute('fill', 'var(--text-primary, #e2e8f0)');
+                    textEl.style.fontSize = 'calc(14px / var(--pdf-scale, 1))';
+                    textEl.setAttribute('font-family', 'Inter, sans-serif');
+                    textEl.classList.add('stamp-hover-text');
+                    textEl.style.pointerEvents = 'none';
+                    
+                    hoverTexts.forEach((ht, idx) => {
+                        const tspan = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
+                        tspan.setAttribute('x', stamp.rect[2] + 4);
+                        if (idx > 0) {
+                            tspan.setAttribute('dy', '1.2em');
+                        }
+                        if (ht.color) {
+                            tspan.setAttribute('fill', ht.color);
+                            tspan.style.fontWeight = 'bold';
+                        }
+                        tspan.textContent = ht.text;
+                        textEl.appendChild(tspan);
+                    });
+                    
+                    svg.appendChild(textEl);
+                }
+            }
         });
     }
+
+    window.redrawStampVisuals = function() {
+        if (!currentPdf || !currentPdfStamps) return;
+        document.querySelectorAll('.page-wrapper').forEach(wrapper => {
+            const pageNum = parseInt(wrapper.dataset.page);
+            const svg = wrapper.querySelector('.vector-overlay') || wrapper.querySelector('.selection-overlay');
+            if (svg) overlayStampRects(pageNum, svg);
+        });
+    };
 
     function handleStampSelection(stamp, e) {
         const index = currentPdfStamps.findIndex(s => s.xref === stamp.xref);
@@ -929,10 +998,13 @@ function initApp() {
         }
         
         try {
+            console.time('fetchAnnotations');
             setLoadingProgress(10, 'Loading annotations…');
             await fetchAnnotations();
+            console.timeEnd('fetchAnnotations');
             
             // Fetch stamps if not already fetched
+            console.time('fetchStamps');
             setLoadingProgress(20, 'Loading stamps…');
             selectedStamp = null;
             if (!stampsFetched) {
@@ -946,9 +1018,11 @@ function initApp() {
                     console.error('Failed to load stamps:', e);
                 }
             }
+            console.timeEnd('fetchStamps');
             renderStampsList();
 
             // Fetch patterns
+            console.time('fetchPatterns');
             setLoadingProgress(30, 'Loading patterns…');
             currentPdfPatterns = [];
             try {
@@ -961,16 +1035,21 @@ function initApp() {
             } catch (e) {
                 console.error('Failed to load patterns:', e);
             }
+            console.timeEnd('fetchPatterns');
             renderPatternsList();
 
+            console.time('fetchPageInfo');
             setLoadingProgress(40, 'Fetching page info…');
             const res = await fetch(`/api/pdf/${encodeURIComponent(path)}/info`);
             const info = await res.json();
+            console.timeEnd('fetchPageInfo');
             totalPages = info.page_count;
             pageTotal.textContent = totalPages;
             
+            console.time('reloadView');
             setLoadingProgress(60, 'Initializing renderer…');
             await reloadView();
+            console.timeEnd('reloadView');
             if (stampToOpen) {
                 requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
@@ -1116,9 +1195,48 @@ function initApp() {
         const encPath = encodeURIComponent(currentPdf);
         
         try {
-            if (pageNum === 1) setLoadingProgress(70, 'Fetching drawing data…');
+            console.time(`fetchDrawings_page_${pageNum}`);
+            if (pageNum === 1) setLoadingProgress(70, 'Fetching drawing data… (Connecting)');
             const res = await fetch(`/api/pdf/${encPath}/page/${pageNum}/drawings`);
-            const data = await res.json();
+            
+            // Read response stream to report real-time download progress
+            const contentLength = res.headers.get('content-length');
+            const total = contentLength ? parseInt(contentLength, 10) : 0;
+            let loaded = 0;
+            
+            const reader = res.body.getReader();
+            const chunks = [];
+            
+            while(true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                loaded += value.length;
+                
+                if (pageNum === 1) {
+                    const mbLoaded = (loaded / 1024 / 1024).toFixed(1);
+                    if (total) {
+                        const mbTotal = (total / 1024 / 1024).toFixed(1);
+                        const pct = Math.round((loaded / total) * 100);
+                        // Map 0-100% download to 70-80% overall progress
+                        setLoadingProgress(70 + (pct * 0.1), `Fetching drawing data… ${mbLoaded}MB / ${mbTotal}MB (${pct}%)`);
+                    } else {
+                        setLoadingProgress(75, `Fetching drawing data… ${mbLoaded}MB downloaded`);
+                    }
+                }
+            }
+            
+            // Reconstruct JSON from stream chunks
+            if (pageNum === 1) setLoadingProgress(80, 'Parsing drawing data…');
+            const allChunks = new Uint8Array(loaded);
+            let position = 0;
+            for(let chunk of chunks) {
+                allChunks.set(chunk, position);
+                position += chunk.length;
+            }
+            const text = new TextDecoder("utf-8").decode(allChunks);
+            const data = JSON.parse(text);
+            console.timeEnd(`fetchDrawings_page_${pageNum}`);
             
             if (renderId !== currentRenderId) return null; // Abort
             if (data.error) throw new Error(data.error);
@@ -1148,18 +1266,35 @@ function initApp() {
             
             if (pageNum === 1) setLoadingProgress(90, 'Building overlays…');
             
-            // Map globalIds to drawings
+            // Map globalIds and pre-calculate area to prevent O(N log N) freezing during sort
             data.drawings.forEach(item => {
                 const globalId = `p${pageNum}-${item.id}`;
                 item.globalId = globalId;
                 item.page = pageNum;
+                
+                // Pre-calculate area for sorting
+                if (item.type === 'Line') item._cachedArea = 0;
+                else if (item.type === 'Rect') item._cachedArea = Math.abs(item.width * item.height);
+                else if (item.type === 'Polygon' || item.type === 'Arc/Curve') {
+                    const xs = item.points.map(p => p[0]);
+                    const ys = item.points.map(p => p[1]);
+                    item._cachedArea = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+                } else {
+                    item._cachedArea = 0;
+                }
             });
+            
+            // Sort drawings by area in descending order (largest first, smallest last)
+            // This ensures smaller hit targets are rendered on top of larger ones (e.g. background rects)
+            data.drawings.sort((a, b) => b._cachedArea - a._cachedArea);
             
             // Render SVG vectors
             if (showVectors) {
                 if (currentRendererSetting === 'canvas') {
+                    console.time(`initCanvasRenderer_page_${pageNum}`);
                     const renderer = new CanvasVectorRenderer(wrapper, data.page_bounds, data.drawings, pageNum);
                     canvasRenderers.set(pageNum, renderer);
+                    console.timeEnd(`initCanvasRenderer_page_${pageNum}`);
                     // Draw initial highlights
                     setTimeout(() => refreshCanvasHighlights(), 0);
                 } else {
@@ -1173,6 +1308,10 @@ function initApp() {
                             el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
                             el.setAttribute('x', item.x); el.setAttribute('y', item.y);
                             el.setAttribute('width', item.width); el.setAttribute('height', item.height);
+                        } else if (item.type === 'Polygon') {
+                            el = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                            const ptsStr = item.points.map(p => `${p[0]},${p[1]}`).join(' ');
+                            el.setAttribute('points', ptsStr);
                         } else if (item.type === 'Arc/Curve') {
                             el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
                             const pts = item.points;
@@ -1195,17 +1334,13 @@ function initApp() {
                             // Create an invisible wider hit target for easier mouse interaction
                             const hitTarget = el.cloneNode(true);
                             hitTarget.removeAttribute('id');
+                            hitTarget.removeAttribute('opacity');
                             hitTarget.classList.remove('vector-item');
                             hitTarget.classList.add('vector-item-hit-target');
                             hitTarget.style.stroke = item.color_hex || '#000000';
                             hitTarget.style.strokeOpacity = '0';
                             hitTarget.style.strokeWidth = '10px';
                             hitTarget.style.fill = 'none';
-                            // Arc/Curve paths (bezier) with strokeOpacity:0 won't receive pointer events
-                            // via the default 'visiblePainted' rule — force geometric hit-testing.
-                            if (item.type === 'Arc/Curve' || item.type === 'Rect') {
-                                hitTarget.style.pointerEvents = 'visibleStroke';
-                            }
                             
                             // Store item data for event delegation
                             hitTarget._itemData = item;
@@ -1364,6 +1499,7 @@ function initApp() {
         }
 
         panZoomContainer.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+        panZoomContainer.style.setProperty('--pdf-scale', scale);
         zoomLevelDisplay.textContent = `${Math.round(scale * 100)}%`;
 
         // Update current page counter in continuous mode based on scroll position
@@ -1587,11 +1723,11 @@ function initApp() {
             minY = Math.min(item.start[1], item.end[1]);
             maxY = Math.max(item.start[1], item.end[1]);
         } else if (item.type === 'Rect') {
-            minX = item.x;
-            maxX = item.x + item.width;
-            minY = item.y;
-            maxY = item.y + item.height;
-        } else if (item.type === 'Arc/Curve') {
+            minX = Math.min(item.x, item.x + item.width);
+            maxX = Math.max(item.x, item.x + item.width);
+            minY = Math.min(item.y, item.y + item.height);
+            maxY = Math.max(item.y, item.y + item.height);
+        } else if (item.type === 'Arc/Curve' || item.type === 'Polygon') {
             const xs = item.points.map(p => p[0]);
             const ys = item.points.map(p => p[1]);
             minX = Math.min(...xs);
@@ -1987,7 +2123,8 @@ function initApp() {
         
         const dist = Math.sqrt(dx*dx + dy*dy);
         if (dist > 15) { // Deadzone radius
-            const rate = (dist - 15) * 0.05;
+            const speedMultiplier = window.APP_CONFIG ? window.APP_CONFIG.auto_scroll_speed : 0.05;
+            const rate = (dist - 15) * speedMultiplier;
             translateX -= (dx / dist) * rate;
             translateY -= (dy / dist) * rate;
             updateTransform();
@@ -2722,7 +2859,8 @@ function initApp() {
             selectionMode = true;
             viewerContainer.classList.add('selection-mode');
             clearSelection();
-            updateUIState();
+            toggleSidebarRight(true);
+            switchSidebarTab('patterns');
         });
     });
 
@@ -2765,7 +2903,8 @@ function initApp() {
             selectionMode = true;
             viewerContainer.classList.add('selection-mode');
             clearSelection();
-            updateUIState();
+            toggleSidebarRight(true);
+            switchSidebarTab('patterns');
         });
     });
 
@@ -3062,7 +3201,7 @@ function initApp() {
             scannerStatus.textContent = `${xrefs.length} stamp(s) deleted`;
         }
         window.dispatchEvent(new CustomEvent('stamps-deleted', { detail: { xrefs } }));
-        renderStampHighlights();
+        if (window.renderStampHighlights) window.renderStampHighlights();
         
         // Let background image handler load the fresh PDF
         if (window.renderPdfPage) {
@@ -4303,7 +4442,7 @@ function initApp() {
             ih = Math.abs(item.start[1] - item.end[1]);
         } else if (item.type === 'Rect') {
             ix = item.x; iy = item.y; iw = item.width; ih = item.height;
-        } else if (item.type === 'Arc/Curve') {
+        } else if (item.type === 'Arc/Curve' || item.type === 'Polygon') {
             const xs = item.points.map(p => p[0]);
             const ys = item.points.map(p => p[1]);
             ix = Math.min(...xs); iy = Math.min(...ys);
@@ -4340,7 +4479,7 @@ function initApp() {
                     coordsText = `(${item.start[0].toFixed(1)}, ${item.start[1].toFixed(1)}) → (${item.end[0].toFixed(1)}, ${item.end[1].toFixed(1)})`;
                 } else if (item.type === 'Rect') {
                     coordsText = `(${item.x.toFixed(1)}, ${item.y.toFixed(1)}) → (${(item.x + item.width).toFixed(1)}, ${(item.y + item.height).toFixed(1)})`;
-                } else if (item.type === 'Arc/Curve') {
+                } else if (item.type === 'Arc/Curve' || item.type === 'Polygon') {
                     if (item.points && item.points.length >= 2) {
                         const startPt = item.points[0];
                         const endPt = item.points[item.points.length - 1];
@@ -4422,7 +4561,7 @@ function initApp() {
                 color_hex: item.color_hex,
                 coordinates: item.type === 'Line' ? {start: item.start, end: item.end} : 
                              item.type === 'Rect' ? {x: item.x, y: item.y, w: item.width, h: item.height} :
-                             item.type === 'Arc/Curve' ? {points: item.points} : {}
+                             item.type === 'Arc/Curve' || item.type === 'Polygon' ? {points: item.points} : {}
             });
         });
         
@@ -4745,6 +4884,10 @@ function initApp() {
                 if (typeof item.x !== 'number' || typeof item.y !== 'number' || typeof item.width !== 'number' || typeof item.height !== 'number') return [];
                 return [[item.x, item.y], [item.x+item.width, item.y], [item.x+item.width, item.y+item.height], [item.x, item.y+item.height]];
             }
+            if (item.type === 'Polygon') {
+                if (!item.points) return [];
+                return item.points;
+            }
             if (item.type === 'Arc/Curve') {
                 if (!item.points || item.points.length < 4) return [];
                 return [item.points[0], item.points[3]];
@@ -4781,6 +4924,14 @@ function initApp() {
                     if (distToSegment(p, pts[i], pts[(i+1)%4]) <= TOLERANCE) return true;
                 }
                 return false;
+            } else if (item.type === 'Polygon') {
+                if (!item.points || item.points.length < 3) return false;
+                const pts = item.points;
+                const len = pts.length;
+                for (let i = 0; i < len; i++) {
+                    if (distToSegment(p, pts[i], pts[(i + 1) % len]) <= TOLERANCE) return true;
+                }
+                return false;
             } else if (item.type === 'Arc/Curve') {
                 if (!item.points || item.points.length < 4) return false;
                 return arePointsClose(p, item.points[0]) || arePointsClose(p, item.points[3]);
@@ -4808,6 +4959,14 @@ function initApp() {
                 maxX = item.x + item.width;
                 minY = item.y;
                 maxY = item.y + item.height;
+            } else if (item.type === 'Polygon') {
+                if (!item.points) return [];
+                const xs = item.points.map(p => p ? p[0] : 0);
+                const ys = item.points.map(p => p ? p[1] : 0);
+                minX = Math.min(...xs);
+                maxX = Math.max(...xs);
+                minY = Math.min(...ys);
+                maxY = Math.max(...ys);
             } else if (item.type === 'Arc/Curve') {
                 if (!item.points || item.points.length < 4) return [];
                 const xs = item.points.map(p => p ? p[0] : 0);

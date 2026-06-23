@@ -46,6 +46,7 @@ class SpatialHashGrid {
         
         let bestItem = null;
         let minDistance = radius;
+        let bestArea = Infinity;
 
         // Perfect geometric point-to-primitive distance check
         candidates.forEach(cand => {
@@ -53,6 +54,14 @@ class SpatialHashGrid {
             if (dist < minDistance) {
                 minDistance = dist;
                 bestItem = cand;
+                bestArea = this._getItemArea(cand);
+            } else if (dist === minDistance && dist === 0) {
+                // If both are inside (distance 0), prefer the one with smaller area (more specific shape)
+                const area = this._getItemArea(cand);
+                if (area < bestArea) {
+                    bestItem = cand;
+                    bestArea = area;
+                }
             }
         });
 
@@ -101,6 +110,19 @@ class SpatialHashGrid {
         return Array.from(results);
     }
 
+    _isPointInPolygon(px, py, points) {
+        let inside = false;
+        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+            const xi = points[i][0], yi = points[i][1];
+            const xj = points[j][0], yj = points[j][1];
+            
+            const intersect = ((yi > py) !== (yj > py))
+                && (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
     _getDistanceToItem(px, py, item) {
         if (item.type === 'Line') {
             return this._pointToSegmentDistance(px, py, item.start[0], item.start[1], item.end[0], item.end[1]);
@@ -111,6 +133,15 @@ class SpatialHashGrid {
             const d3 = this._pointToSegmentDistance(px, py, item.x + item.width, item.y + item.height, item.x, item.y + item.height);
             const d4 = this._pointToSegmentDistance(px, py, item.x, item.y + item.height, item.x, item.y);
             return Math.min(d1, d2, d3, d4);
+        } else if (item.type === 'Polygon') {
+            let minDist = Infinity;
+            const pts = item.points;
+            const len = pts.length;
+            for (let i = 0; i < len; i++) {
+                const d = this._pointToSegmentDistance(px, py, pts[i][0], pts[i][1], pts[(i + 1) % len][0], pts[(i + 1) % len][1]);
+                if (d < minDist) minDist = d;
+            }
+            return minDist;
         } else if (item.type === 'Arc/Curve') {
             // Approximate bezier curve distance using control points or simple distance to polygon segments
             const pts = item.points;
@@ -150,6 +181,27 @@ class SpatialHashGrid {
         const nearestY = y1 + t * dy;
         return Math.hypot(px - nearestX, py - nearestY);
     }
+
+    _getItemArea(item) {
+        if (item.type === 'Line') {
+            return 0;
+        } else if (item.type === 'Rect') {
+            return Math.abs(item.width * item.height);
+        } else if (item.type === 'Polygon') {
+            const xs = item.points.map(p => p[0]);
+            const ys = item.points.map(p => p[1]);
+            const w = Math.max(...xs) - Math.min(...xs);
+            const h = Math.max(...ys) - Math.min(...ys);
+            return w * h;
+        } else if (item.type === 'Arc/Curve') {
+            const xs = item.points.map(p => p[0]);
+            const ys = item.points.map(p => p[1]);
+            const w = Math.max(...xs) - Math.min(...xs);
+            const h = Math.max(...ys) - Math.min(...ys);
+            return w * h;
+        }
+        return Infinity;
+    }
 }
 
 class CanvasVectorRenderer {
@@ -163,7 +215,10 @@ class CanvasVectorRenderer {
         this.svgOverlay = this.wrapper.querySelector('.vector-overlay');
         
         this.spatialIndex = new SpatialHashGrid(bounds.width, bounds.height);
+        
+        console.time(`buildIndex_page_${pageNum}`);
         this.buildIndex();
+        console.timeEnd(`buildIndex_page_${pageNum}`);
     }
 
     buildIndex() {
@@ -185,10 +240,19 @@ class CanvasVectorRenderer {
             };
         } else if (item.type === 'Rect') {
             return {
-                minX: item.x,
-                maxX: item.x + item.width,
-                minY: item.y,
-                maxY: item.y + item.height
+                minX: Math.min(item.x, item.x + item.width),
+                maxX: Math.max(item.x, item.x + item.width),
+                minY: Math.min(item.y, item.y + item.height),
+                maxY: Math.max(item.y, item.y + item.height)
+            };
+        } else if (item.type === 'Polygon') {
+            const xs = item.points.map(p => p[0]);
+            const ys = item.points.map(p => p[1]);
+            return {
+                minX: Math.min(...xs),
+                maxX: Math.max(...xs),
+                minY: Math.min(...ys),
+                maxY: Math.max(...ys)
             };
         } else if (item.type === 'Arc/Curve') {
             const xs = item.points.map(p => p[0]);
@@ -267,6 +331,13 @@ class CanvasVectorRenderer {
                         ctx.lineTo(item.end[0], item.end[1]);
                     } else if (item.type === 'Rect') {
                         ctx.rect(item.x, item.y, item.width, item.height);
+                    } else if (item.type === 'Polygon') {
+                        const pts = item.points;
+                        ctx.moveTo(pts[0][0], pts[0][1]);
+                        ctx.lineTo(pts[1][0], pts[1][1]);
+                        ctx.lineTo(pts[2][0], pts[2][1]);
+                        ctx.lineTo(pts[3][0], pts[3][1]);
+                        ctx.closePath();
                     } else if (item.type === 'Arc/Curve') {
                         const pts = item.points;
                         ctx.moveTo(pts[0][0], pts[0][1]);
@@ -312,6 +383,10 @@ class CanvasVectorRenderer {
             el.setAttribute('y', item.y);
             el.setAttribute('width', item.width);
             el.setAttribute('height', item.height);
+        } else if (item.type === 'Polygon') {
+            el = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+            const ptsStr = item.points.map(p => `${p[0]},${p[1]}`).join(' ');
+            el.setAttribute('points', ptsStr);
         } else if (item.type === 'Arc/Curve') {
             el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
             const pts = item.points;

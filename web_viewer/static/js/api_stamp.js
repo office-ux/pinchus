@@ -114,9 +114,410 @@ function initStampAPI() {
     // Dynamic field creation
     const fieldsContainer = document.getElementById("stamp-fields-container");
     
-    function createFieldRow(name = "", value = "", type = "string", isHidden = false, isReadOnly = false) {
+    // --- Formula Modal Setup ---
+    let formulaModal = document.getElementById("formula-editor-modal");
+    if (!formulaModal) {
+        formulaModal = document.createElement("div");
+        formulaModal.id = "formula-editor-modal";
+        formulaModal.className = "modal";
+        formulaModal.style.display = "none";
+        formulaModal.style.zIndex = "2000";
+        formulaModal.innerHTML = `
+            <div class="modal-content glass-modal" style="max-width: 500px; width: 100%;">
+                <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0;">Edit Formula</h3>
+                    <span id="btn-close-formula-modal" class="close-btn" style="cursor: pointer;">&times;</span>
+                </div>
+                <div class="modal-body" style="display: flex; gap: 10px; align-items: center; margin-top: 15px;">
+                    <datalist id="formula-fields-datalist"></datalist>
+                    
+                    <div style="flex: 1;">
+                        <label style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block;">Operand 1</label>
+                        <input type="text" id="formula-op1" list="formula-fields-datalist" placeholder="Field or Value" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); box-sizing: border-box;">
+                    </div>
+                    
+                    <div>
+                        <label style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block;">Function</label>
+                        <select id="formula-operator" style="padding: 6px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); height: 31px; box-sizing: border-box;">
+                            <option value="+">+</option>
+                            <option value="-">-</option>
+                            <option value="*">*</option>
+                            <option value="/">/</option>
+                            <option value="%">%</option>
+                        </select>
+                    </div>
+                    
+                    <div style="flex: 1;">
+                        <label style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 4px; display: block;">Operand 2</label>
+                        <input type="text" id="formula-op2" list="formula-fields-datalist" placeholder="Field or Value" style="width: 100%; padding: 6px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); box-sizing: border-box;">
+                    </div>
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+                    <button id="btn-cancel-formula" class="btn">Cancel</button>
+                    <button id="btn-save-formula" class="btn primary-btn">Apply</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(formulaModal);
+        
+        document.getElementById("btn-close-formula-modal").addEventListener("click", () => formulaModal.style.display = "none");
+        document.getElementById("btn-cancel-formula").addEventListener("click", () => formulaModal.style.display = "none");
+        
+        formulaModal.addEventListener("click", (e) => {
+            if (e.target === formulaModal) {
+                formulaModal.style.display = "none";
+            }
+        });
+    }
+
+    let currentFormulaInput = null;
+    let currentFormulaRow = null;
+
+    async function openFormulaEditor(valueInput, row) {
+        currentFormulaInput = valueInput;
+        currentFormulaRow = row;
+        const projectName = window.currentProject || (document.getElementById("current-project-label") ? document.getElementById("current-project-label").textContent : "");
+        let availableFields = [];
+        if (projectName) {
+            try {
+                const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/fields_data`);
+                const data = await res.json();
+                if (data.success) {
+                    availableFields = data.fields || [];
+                }
+            } catch (e) {
+                console.error("Error fetching fields for formula:", e);
+            }
+        }
+        
+        const datalist = document.getElementById("formula-fields-datalist");
+        datalist.innerHTML = "";
+        availableFields.forEach(f => {
+            const opt = document.createElement("option");
+            opt.value = f;
+            datalist.appendChild(opt);
+        });
+        
+        let op1 = "";
+        let op = "+";
+        let op2 = "";
+        
+        const val = row && row.dataset.formula ? row.dataset.formula.trim() : "";
+        const match = val.match(/^(.*?)\s+([\+\-\*\/\%])\s+(.*)$/);
+        if (match) {
+            op1 = match[1];
+            op = match[2];
+            op2 = match[3];
+        } else if (val) {
+            op1 = val;
+        }
+        
+        document.getElementById("formula-op1").value = op1;
+        document.getElementById("formula-operator").value = op;
+        document.getElementById("formula-op2").value = op2;
+        
+        formulaModal.style.display = "flex";
+    }
+
+    const saveFormulaHandler = () => {
+        if (currentFormulaInput && currentFormulaRow) {
+            const op1 = document.getElementById("formula-op1").value.trim();
+            const op = document.getElementById("formula-operator").value;
+            const op2 = document.getElementById("formula-op2").value.trim();
+            
+            let expr = "";
+            if (op1 && op2) {
+                expr = `${op1} ${op} ${op2}`;
+            } else if (op1) {
+                expr = op1;
+            } else if (op2) {
+                expr = op2;
+            }
+            
+            currentFormulaRow.dataset.formula = expr;
+            
+            // evaluate immediately for immediate feedback
+            let evalVal = "";
+            const fieldMap = {};
+            const fieldsContainer = document.getElementById("stamp-fields-container");
+            if (fieldsContainer) {
+                fieldsContainer.querySelectorAll(".stamp-field-row").forEach(r => {
+                    const inputs = r.querySelectorAll("input");
+                    const select = r.querySelector("select");
+                    if (inputs.length >= 2) {
+                        const fname = inputs[0].value.trim().toLowerCase();
+                        const fval = inputs[1].value.trim();
+                        const ftype = select ? select.value : "string";
+                        if (fname && ftype !== "formula") {
+                            fieldMap[fname] = fval;
+                        }
+                    }
+                });
+            }
+            
+            const match = expr.match(/^(.*?)\s+([\+\-\*\/\%])\s+(.*)$/);
+            if (match) {
+                let p1 = match[1].trim();
+                let p = match[2].trim();
+                let p2 = match[3].trim();
+                let val1 = isNaN(parseFloat(p1)) ? (fieldMap[p1.toLowerCase()] || 0) : parseFloat(p1);
+                let val2 = isNaN(parseFloat(p2)) ? (fieldMap[p2.toLowerCase()] || 0) : parseFloat(p2);
+                val1 = parseFloat(val1) || 0;
+                val2 = parseFloat(val2) || 0;
+                switch(p) {
+                    case '+': evalVal = val1 + val2; break;
+                    case '-': evalVal = val1 - val2; break;
+                    case '*': evalVal = val1 * val2; break;
+                    case '/': evalVal = val2 !== 0 ? val1 / val2 : 0; break;
+                    case '%': evalVal = val2 !== 0 ? val1 % val2 : 0; break;
+                }
+                evalVal = Math.round(evalVal * 100) / 100;
+            } else {
+                let single = expr.trim();
+                evalVal = fieldMap[single.toLowerCase()] || single;
+            }
+            
+            currentFormulaInput.value = evalVal !== "" ? evalVal : expr;
+            currentFormulaRow.dataset.loadedValue = currentFormulaInput.value;
+        }
+        formulaModal.style.display = "none";
+    };
+    
+    // Remove existing listener to avoid duplicates if initStampAPI is called multiple times
+    const btnSaveForm = document.getElementById("btn-save-formula");
+    if (btnSaveForm) {
+        const newBtnSaveForm = btnSaveForm.cloneNode(true);
+        btnSaveForm.parentNode.replaceChild(newBtnSaveForm, btnSaveForm);
+        newBtnSaveForm.addEventListener("click", saveFormulaHandler);
+    }
+    // --- End Formula Modal Setup ---
+
+    // --- Conditional Formatting Modal Setup ---
+    let condFormatModal = document.getElementById("cond-format-modal");
+    if (!condFormatModal) {
+        condFormatModal = document.createElement("div");
+        condFormatModal.id = "cond-format-modal";
+        condFormatModal.className = "modal";
+        condFormatModal.style.display = "none";
+        condFormatModal.style.zIndex = "2000";
+        condFormatModal.innerHTML = `
+            <div class="modal-content glass-modal" style="max-width: 600px; width: 100%;">
+                <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0;">Conditional Formatting</h3>
+                    <span id="btn-close-cond-modal" class="close-btn" style="cursor: pointer;">&times;</span>
+                </div>
+                <div class="modal-body" style="margin-top: 15px;">
+                    <div id="cond-format-rules-container" style="display: flex; flex-direction: column; gap: 10px;"></div>
+                    <button id="btn-add-cond-rule" class="btn" style="margin-top: 10px;">+ Add Condition</button>
+                </div>
+                <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px;">
+                    <button id="btn-cancel-cond" class="btn">Cancel</button>
+                    <button id="btn-save-cond" class="btn primary-btn">Apply</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(condFormatModal);
+        
+        document.getElementById("btn-close-cond-modal").addEventListener("click", () => condFormatModal.style.display = "none");
+        document.getElementById("btn-cancel-cond").addEventListener("click", () => condFormatModal.style.display = "none");
+        
+        condFormatModal.addEventListener("click", (e) => {
+            if (e.target === condFormatModal) {
+                condFormatModal.style.display = "none";
+            }
+        });
+    }
+
+    let currentCondRow = null;
+    let currentCondInput = null;
+
+    function renderCondFormatRules(rules) {
+        const container = document.getElementById("cond-format-rules-container");
+        container.innerHTML = "";
+        rules.forEach((rule, idx) => {
+            const ruleDiv = document.createElement("div");
+            ruleDiv.style.display = "flex";
+            ruleDiv.style.gap = "10px";
+            ruleDiv.style.alignItems = "center";
+            ruleDiv.className = "cond-format-rule-row";
+            ruleDiv.innerHTML = `
+                <span style="font-size: 0.8rem; color: var(--text-secondary); width: 20px;">${idx + 1}.</span>
+                <select class="cond-operator" style="padding: 6px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary);">
+                    <option value="==" ${rule.operator === '==' ? 'selected' : ''}>=</option>
+                    <option value="<" ${rule.operator === '<' ? 'selected' : ''}>&lt;</option>
+                    <option value=">" ${rule.operator === '>' ? 'selected' : ''}>&gt;</option>
+                    <option value="!=" ${rule.operator === '!=' ? 'selected' : ''}>!=</option>
+                </select>
+                <input type="text" class="cond-target" list="formula-fields-datalist" placeholder="Value or Field" value="${rule.target || ''}" style="flex: 1; padding: 6px; border-radius: 4px; border: 1px solid var(--modal-input-border); background: var(--modal-input-bg); color: var(--text-primary); box-sizing: border-box;">
+                <input type="color" class="cond-color" value="${rule.color || '#ff0000'}" style="padding: 0; border: none; background: transparent; cursor: pointer; width: 30px; height: 30px; border-radius: 4px;">
+                <button class="btn small-btn btn-remove-cond-rule" style="color: #ef4444; border: none; background: transparent;" title="Remove">🗑</button>
+            `;
+            ruleDiv.querySelector(".btn-remove-cond-rule").addEventListener("click", () => {
+                ruleDiv.remove();
+            });
+            container.appendChild(ruleDiv);
+        });
+    }
+
+    document.getElementById("btn-add-cond-rule").addEventListener("click", () => {
+        const container = document.getElementById("cond-format-rules-container");
+        if (container.children.length >= 5) {
+            alert("Maximum 5 conditions allowed.");
+            return;
+        }
+        const rules = [];
+        container.querySelectorAll(".cond-format-rule-row").forEach(row => {
+            rules.push({
+                operator: row.querySelector(".cond-operator").value,
+                target: row.querySelector(".cond-target").value,
+                color: row.querySelector(".cond-color").value
+            });
+        });
+        rules.push({ operator: "==", target: "", color: "#ff0000" });
+        renderCondFormatRules(rules);
+    });
+
+    document.getElementById("btn-save-cond").addEventListener("click", () => {
+        if (!currentCondRow) return;
+        const container = document.getElementById("cond-format-rules-container");
+        const rules = [];
+        container.querySelectorAll(".cond-format-rule-row").forEach(row => {
+            const target = row.querySelector(".cond-target").value.trim();
+            if (target) {
+                rules.push({
+                    operator: row.querySelector(".cond-operator").value,
+                    target: target,
+                    color: row.querySelector(".cond-color").value
+                });
+            }
+        });
+        currentCondRow.dataset.conditionalFormatting = JSON.stringify(rules);
+        condFormatModal.style.display = "none";
+        evaluateRowConditionalFormatting(currentCondRow);
+    });
+
+    function openCondFormatEditor(row, valueInput) {
+        currentCondRow = row;
+        currentCondInput = valueInput;
+        let rules = [];
+        try {
+            if (row.dataset.conditionalFormatting) {
+                rules = JSON.parse(row.dataset.conditionalFormatting);
+            }
+        } catch(e) { console.error("Error parsing conditional formatting:", e); }
+        renderCondFormatRules(rules);
+        condFormatModal.style.display = "flex";
+    }
+
+    // Evaluator
+    function evaluateRowConditionalFormatting(row) {
+        if (!row) return;
+        const valueInput = row.querySelector("td:nth-child(3) input");
+        if (!valueInput) return;
+        
+        valueInput.style.backgroundColor = "transparent";
+        valueInput.style.color = "var(--text-primary)";
+        
+        const condStr = row.dataset.conditionalFormatting;
+        if (!condStr) return;
+        
+        let rules = [];
+        try {
+            rules = JSON.parse(condStr);
+        } catch(e) { return; }
+        if (!rules.length) return;
+        
+        const myVal = valueInput.value.trim();
+        const myNum = parseFloat(myVal);
+        const myIsNum = !isNaN(myNum);
+
+        // Build context of all fields to resolve targets
+        const context = {};
+        document.querySelectorAll("#stamp-fields-tbody .stamp-field-row").forEach(r => {
+            const inputs = r.querySelectorAll("input");
+            if (inputs.length >= 2) {
+                const k = inputs[0].value.trim();
+                const v = inputs[1].value.trim();
+                context[k] = v;
+            }
+        });
+
+        for (const rule of rules) {
+            let targetVal = rule.target;
+            if (context.hasOwnProperty(targetVal)) {
+                targetVal = context[targetVal];
+            }
+            
+            let matched = false;
+            const tNum = parseFloat(targetVal);
+            const tIsNum = !isNaN(tNum);
+            
+            if (rule.operator === "==") {
+                matched = myVal === targetVal;
+            } else if (rule.operator === "<") {
+                if (myIsNum && tIsNum) matched = myNum < tNum;
+            } else if (rule.operator === ">") {
+                if (myIsNum && tIsNum) matched = myNum > tNum;
+            } else if (rule.operator === "!=") {
+                matched = myVal !== targetVal;
+            }
+            
+            if (matched) {
+                valueInput.style.backgroundColor = rule.color + "33"; // 20% opacity
+                valueInput.style.color = rule.color;
+                break; // First match wins
+            }
+        }
+    }
+
+    window.evaluateConditionalFormattingRaw = function(fieldValue, rules, allFieldsObj) {
+        if (!rules || !rules.length) return null;
+        const myVal = String(fieldValue).trim();
+        const myNum = parseFloat(myVal);
+        const myIsNum = !isNaN(myNum);
+        
+        for (const rule of rules) {
+            let targetVal = rule.target;
+            if (allFieldsObj && allFieldsObj.hasOwnProperty(targetVal)) {
+                targetVal = allFieldsObj[targetVal];
+            }
+            
+            let matched = false;
+            const tNum = parseFloat(targetVal);
+            const tIsNum = !isNaN(tNum);
+            
+            if (rule.operator === "==") {
+                matched = myVal === String(targetVal).trim();
+            } else if (rule.operator === "<") {
+                if (myIsNum && tIsNum) matched = myNum < tNum;
+            } else if (rule.operator === ">") {
+                if (myIsNum && tIsNum) matched = myNum > tNum;
+            } else if (rule.operator === "!=") {
+                matched = myVal !== String(targetVal).trim();
+            }
+            
+            if (matched) {
+                return rule.color;
+            }
+        }
+        return null;
+    };
+    // --- End Conditional Formatting Setup ---
+
+    function createFieldRow(name = "", value = "", type = "string", isHidden = false, isReadOnly = false, formula_expression = "", conditional_formatting = "") {
+        if (formula_expression) {
+            type = "formula";
+        }
+        
         const row = document.createElement("tr");
         row.className = "stamp-field-row";
+        row.dataset.loadedValue = value;
+        if (formula_expression) {
+            row.dataset.formula = formula_expression;
+        }
+        if (conditional_formatting) {
+            row.dataset.conditionalFormatting = conditional_formatting;
+        }
         if (isHidden) {
             row.style.display = "none";
             row.dataset.hidden = "true";
@@ -140,7 +541,7 @@ function initStampAPI() {
         // Type column
         const tdType = document.createElement("td");
         const typeSelect = document.createElement("select");
-        typeSelect.innerHTML = `<option value="string" ${type==='string'?'selected':''}>String</option><option value="number" ${type==='number'?'selected':''}>Number</option>`;
+        typeSelect.innerHTML = `<option value="string" ${type==='string'?'selected':''}>String</option><option value="number" ${type==='number'?'selected':''}>Number</option><option value="formula" ${type==='formula'?'selected':''}>Formula</option>`;
         if (isReadOnly) {
             typeSelect.disabled = true;
             typeSelect.style.appearance = "none";
@@ -153,10 +554,14 @@ function initStampAPI() {
         
         // Value column
         const tdValue = document.createElement("td");
+        tdValue.style.display = "flex";
+        tdValue.style.gap = "4px";
+        
         const valueInput = document.createElement("input");
         valueInput.type = "text";
         valueInput.placeholder = "Value";
         valueInput.value = value;
+        valueInput.style.flex = "1";
         if (isReadOnly) {
             valueInput.readOnly = true;
             valueInput.style.backgroundColor = "transparent";
@@ -164,18 +569,128 @@ function initStampAPI() {
             valueInput.style.color = "var(--text-secondary)";
             valueInput.style.cursor = "default";
         }
+        valueInput.addEventListener("input", () => {
+            evaluateRowConditionalFormatting(row);
+        });
         tdValue.appendChild(valueInput);
         
-        // Delete column
+        const btnFormula = document.createElement("button");
+        btnFormula.className = "btn small-btn";
+        btnFormula.textContent = "fx";
+        btnFormula.style.display = type === "formula" ? "inline-block" : "none";
+        btnFormula.style.margin = "0";
+        btnFormula.title = "Edit Formula";
+        if (isReadOnly) btnFormula.style.display = "none";
+        
+        btnFormula.onclick = (e) => {
+            e.preventDefault();
+            if (typeof openFormulaEditor === "function") {
+                openFormulaEditor(valueInput, row);
+            }
+        };
+        tdValue.appendChild(btnFormula);
+        
+        typeSelect.addEventListener("change", (e) => {
+            if (e.target.value === "formula") {
+                btnFormula.style.display = "inline-block";
+            } else {
+                btnFormula.style.display = "none";
+            }
+        });
+        
+        // Actions column
         const tdDel = document.createElement("td");
         tdDel.style.textAlign = "center";
         tdDel.style.width = "40px";
         if (!isReadOnly) {
-            const delBtn = document.createElement("button");
-            delBtn.className = "btn small-btn";
-            delBtn.innerHTML = "🗑";
-            delBtn.onclick = () => row.remove();
-            tdDel.appendChild(delBtn);
+            const actionsWrapper = document.createElement("div");
+            actionsWrapper.style.display = "inline-block";
+
+            const menuBtn = document.createElement("button");
+            menuBtn.innerHTML = "⋮";
+            menuBtn.title = "Options";
+            menuBtn.style.cssText = "background: transparent; border: none; cursor: pointer; color: var(--text-primary); font-size: 1.2rem; padding: 0 5px; outline: none;";
+
+            const dropdown = document.createElement("div");
+            dropdown.className = "field-actions-dropdown";
+            dropdown.style.display = "none";
+            dropdown.style.position = "fixed"; // Float over everything
+            dropdown.style.backgroundColor = "var(--modal-bg)";
+            dropdown.style.border = "1px solid var(--border-color)";
+            dropdown.style.borderRadius = "4px";
+            dropdown.style.zIndex = "9999";
+            dropdown.style.minWidth = "200px";
+            dropdown.style.boxShadow = "0 2px 8px rgba(0,0,0,0.4)";
+            dropdown.style.textAlign = "left";
+
+            const delOpt = document.createElement("div");
+            delOpt.innerHTML = "🗑 Delete";
+            delOpt.style.padding = "8px 12px";
+            delOpt.style.cursor = "pointer";
+            delOpt.style.color = "var(--text-primary)";
+            delOpt.onmouseover = () => delOpt.style.backgroundColor = "rgba(255,255,255,0.1)";
+            delOpt.onmouseout = () => delOpt.style.backgroundColor = "transparent";
+            delOpt.onclick = () => {
+                row.remove();
+                dropdown.style.display = "none";
+            };
+
+            const condOpt = document.createElement("div");
+            condOpt.innerHTML = "🎨 Conditional Formatting";
+            condOpt.style.padding = "8px 12px";
+            condOpt.style.cursor = "pointer";
+            condOpt.style.color = "var(--text-primary)";
+            condOpt.onmouseover = () => condOpt.style.backgroundColor = "rgba(255,255,255,0.1)";
+            condOpt.onmouseout = () => condOpt.style.backgroundColor = "transparent";
+            condOpt.onclick = () => {
+                dropdown.style.display = "none";
+                openCondFormatEditor(row, valueInput);
+            };
+
+            dropdown.appendChild(condOpt);
+            dropdown.appendChild(delOpt);
+
+            menuBtn.onclick = (e) => {
+                e.stopPropagation();
+                const isShowing = dropdown.style.display === "block";
+                document.querySelectorAll(".field-actions-dropdown").forEach(d => d.style.display = "none");
+                if (!isShowing) {
+                    const rect = menuBtn.getBoundingClientRect();
+                    dropdown.style.top = (rect.bottom + 2) + "px";
+                    // Align dropdown's right edge with button's right edge
+                    dropdown.style.right = (window.innerWidth - rect.right) + "px";
+                    dropdown.style.left = "auto";
+                    dropdown.style.display = "block";
+                }
+            };
+
+            document.addEventListener("click", () => {
+                dropdown.style.display = "none";
+            });
+
+            // Append dropdown to document.body to ensure it's not clipped by table overflow
+            document.body.appendChild(dropdown);
+            
+            // Clean up dropdown when row is destroyed
+            const observer = new MutationObserver((mutations) => {
+                mutations.forEach((mutation) => {
+                    mutation.removedNodes.forEach((node) => {
+                        if (node === row) {
+                            dropdown.remove();
+                        }
+                    });
+                });
+            });
+            if (row.parentNode) observer.observe(row.parentNode, { childList: true });
+            else {
+                // If not attached yet, wait a bit and observe tbody
+                setTimeout(() => {
+                    if (row.parentNode) observer.observe(row.parentNode, { childList: true });
+                }, 100);
+            }
+
+            actionsWrapper.appendChild(menuBtn);
+            tdDel.appendChild(actionsWrapper);
         }
         
         const handleEnterKey = (e) => {
@@ -453,7 +968,7 @@ function initStampAPI() {
                         Object.entries(s.fields).forEach(([k, v]) => {
                             if (!unionFieldNames.has(k)) {
                                 unionFieldNames.add(k);
-                                unionFields.push({ name: k, value: v, type: "string", _values: new Set([v]) });
+                                unionFields.push({ name: k, value: v, type: "string", _values: new Set([v]), formula_expression: "", conditional_formatting: "" });
                             } else {
                                 let existing = unionFields.find(f => f.name === k);
                                 if (existing && existing._values) {
@@ -470,7 +985,7 @@ function initStampAPI() {
                 meta.fields.forEach(f => {
                     if (!unionFieldNames.has(f.name)) {
                         unionFieldNames.add(f.name);
-                        unionFields.push({ ...f, _values: new Set([f.value]) });
+                        unionFields.push({ ...f, _values: new Set([f.value]), formula_expression: f.formula_expression || "", conditional_formatting: f.conditional_formatting || "" });
                     } else {
                         let existing = unionFields.find(uf => uf.name === f.name);
                         if (existing && existing._values) {
@@ -511,34 +1026,29 @@ function initStampAPI() {
             if (showMoreBtn) {
                 showMoreBtn.textContent = "Show more";
             }
-                       let hiddenCount = 0;
-            let hasNumberField = false;
-            meta.fields.forEach((f, idx) => {
-                if (f.name === "System Pattern") return;
-                let isHidden = idx >= 5;
-                let isReadOnly = false;
-                
-                if (f.name === '#') {
-                    hasNumberField = true;
-                    isHidden = true; // force hide
-                    isReadOnly = true;
-                }
-                
-                if (isHidden && f.name !== '#') hiddenCount++; 
-                
-                const row = createFieldRow(f.name, f.value, f.type, isHidden, isReadOnly);
-                if (f.name === '#') row.dataset.permanentHidden = "true";
-                tbody.appendChild(row);
-            });
             
-            if (!hasNumberField) {
-                const numRow = createFieldRow("#", extractedStampNumber, "string", true, true);
+            let hiddenCount = 0;
+            for (const f of meta.fields) {
+                const isHiddenField = f.name === "#" && !f.value && !f.formula_expression;
+                if (!isHiddenField) {
+                    const r = createFieldRow(f.name, f.value, f.type, false, f.name === "#", f.formula_expression || "", f.conditional_formatting || "");
+                    tbody.appendChild(r);
+                    if (f.conditional_formatting) {
+                        evaluateRowConditionalFormatting(r);
+                    }
+                } else {
+                    hiddenCount++;
+                }
+            }
+            
+            if (hiddenCount === 1) {
+                const numRow = createFieldRow("#", "", "string", true, true);
                 numRow.dataset.permanentHidden = "true";
                 tbody.insertBefore(numRow, tbody.firstChild);
             }
             
             if (meta.fields.length === 0) {
-                tbody.appendChild(createFieldRow("", "", "string", false));
+                tbody.appendChild(createFieldRow("", "", "string", false, false, "", ""));
             }
 
             if (hiddenCount > 0 && showMoreDiv && showMoreBtn) {
@@ -569,12 +1079,22 @@ function initStampAPI() {
         let valid = true;
         let duplicateName = "";
         
+        const rowsData = [];
+        
         fieldsContainer.querySelectorAll(".stamp-field-row").forEach(row => {
             const inputs = row.querySelectorAll("input");
             const select = row.querySelector("select");
             const name = inputs[0].value.trim();
             const value = inputs[1].value.trim();
             const type = select.value;
+            let formula_expression = row.dataset.formula || "";
+            
+            if (type === "formula") {
+                if (!formula_expression || (value !== "(Formula)" && value !== "<Multiple Values>" && value !== row.dataset.loadedValue)) {
+                    formula_expression = value;
+                    row.dataset.formula = value;
+                }
+            }
             
             if (name) {
                 if (fieldNames.has(name.toLowerCase())) {
@@ -582,7 +1102,14 @@ function initStampAPI() {
                     duplicateName = name;
                 }
                 fieldNames.add(name.toLowerCase());
-                fields.push({ name, value, type });
+                rowsData.push({ 
+                    name, 
+                    value, 
+                    type, 
+                    formula_expression, 
+                    conditional_formatting: row.dataset.conditionalFormatting || "",
+                    inputElem: inputs[1] 
+                });
             }
         });
         
@@ -590,6 +1117,7 @@ function initStampAPI() {
             alert(`Duplicate Field Error: The field "${duplicateName}" already exists. Please remove or rename the duplicate field.`);
             return;
         }
+               const fieldsToProcess = rowsData;
         
         let groupId = groupSelect.value ? parseInt(groupSelect.value) : null;
         
@@ -598,11 +1126,11 @@ function initStampAPI() {
         
         const patSelect = document.getElementById("stamp-system-pattern-select");
         if (stampType === "air_outlet" && patSelect && patSelect.value) {
-            const existingPatField = fields.find(f => f.name === "System Pattern");
+            const existingPatField = fieldsToProcess.find(f => f.name === "System Pattern");
             if (existingPatField) {
                 existingPatField.value = patSelect.value;
             } else {
-                fields.push({ name: "System Pattern", value: patSelect.value, type: "string" });
+                fieldsToProcess.push({ name: "System Pattern", value: patSelect.value, type: "string" });
             }
         }
         
@@ -614,11 +1142,16 @@ function initStampAPI() {
         
         try {
             const stamps = window.currentStampsArray || [currentStamp];
+            
+            // 1. Calculate local updates instantly
+            const updatesToPush = [];
+            
             for (const stamp of stamps) {
                 const proj = stamp.project || currentStamp.project || window.currentProject || document.getElementById("current-project-label")?.textContent || "";
                 
                 let currentNum = "";
-                const stampFields = fields.map(f => {
+                let stampSpecificFields = fieldsToProcess.map(f => {
+                    let val = f.value;
                     if (f.name === '#') {
                         let num = stamp.stampName || stamp.xref || "";
                         if (stamp.fields && stamp.fields['#']) {
@@ -628,16 +1161,57 @@ function initStampAPI() {
                             if (m) num = m[2];
                         }
                         currentNum = num;
-                        return { ...f, value: num };
-                    }
-                    if (f.value === "<Multiple Values>") {
-                        let origVal = "";
+                        val = num;
+                    } else if (f.value === "<Multiple Values>") {
                         if (stamp.fields && stamp.fields[f.name] !== undefined) {
-                            origVal = stamp.fields[f.name];
+                            val = stamp.fields[f.name];
+                        } else {
+                            val = "";
                         }
-                        return { ...f, value: origVal };
                     }
-                    return f;
+                    return { ...f, value: val };
+                });
+                
+                // Evaluate formulas per stamp
+                const fieldMap = {};
+                stampSpecificFields.forEach(r => { if (r.type !== 'formula') fieldMap[r.name.toLowerCase()] = r.value; });
+                
+                stampSpecificFields = stampSpecificFields.map(r => {
+                    if (r.type === 'formula' && r.formula_expression) {
+                        const match = r.formula_expression.match(/^(.*?)\s+([\+\-\*\/\%])\s+(.*)$/);
+                        let evalVal = "";
+                        if (match) {
+                            let op1 = match[1].trim();
+                            let op = match[2].trim();
+                            let op2 = match[3].trim();
+                            
+                            let val1 = isNaN(parseFloat(op1)) ? (fieldMap[op1.toLowerCase()] || 0) : parseFloat(op1);
+                            let val2 = isNaN(parseFloat(op2)) ? (fieldMap[op2.toLowerCase()] || 0) : parseFloat(op2);
+                            
+                            val1 = parseFloat(val1) || 0;
+                            val2 = parseFloat(val2) || 0;
+                            
+                            switch (op) {
+                                case '+': evalVal = val1 + val2; break;
+                                case '-': evalVal = val1 - val2; break;
+                                case '*': evalVal = val1 * val2; break;
+                                case '/': evalVal = val2 !== 0 ? val1 / val2 : 0; break;
+                                case '%': evalVal = val2 !== 0 ? val1 % val2 : 0; break;
+                            }
+                            evalVal = Math.round(evalVal * 100) / 100;
+                        } else {
+                            let single = r.formula_expression.trim();
+                            evalVal = fieldMap[single.toLowerCase()] || single;
+                        }
+                        
+                        // Update UI input as well if editing single stamp
+                        if (stamps.length === 1 && r.inputElem) {
+                            r.inputElem.value = evalVal;
+                        }
+                        
+                        return { name: r.name, value: String(evalVal), type: r.type, formula_expression: r.formula_expression, conditional_formatting: r.conditional_formatting };
+                    }
+                    return { name: r.name, value: String(r.value), type: r.type, formula_expression: r.formula_expression, conditional_formatting: r.conditional_formatting };
                 });
                 
                 let finalPatternName = newPatternName;
@@ -645,33 +1219,56 @@ function initStampAPI() {
                     finalPatternName = `${finalPatternName}_${currentNum}`;
                 }
                 
-                await stampAPI.updateStampMeta(proj, stamp.pdf_path, stamp.page, stamp.xref, stampFields, groupId, stampType, finalPatternName);
-            }
-
-            // Apply tag rules to update stamp shapes/colors based on saved changes
-            const projectForRules = window.currentProject || document.getElementById("current-project-label")?.textContent || "";
-            if (projectForRules) {
-                try {
-                    await fetch('/api/manage_tags/apply_rules', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ project: projectForRules })
-                    });
-                } catch (rulesErr) {
-                    console.warn('apply_rules after stamp save failed:', rulesErr);
+                // Update local memory instantly
+                if (window.currentPdfStamps) {
+                    const localStamp = window.currentPdfStamps.find(s => s.xref === stamp.xref);
+                    if (localStamp) {
+                        localStamp.fields = stampSpecificFields;
+                    }
                 }
+                
+                updatesToPush.push({ proj, pdf_path: stamp.pdf_path, page: stamp.page, xref: stamp.xref, fields: stampSpecificFields, groupId, stampType, finalPatternName });
             }
 
+            // Instantly redraw visual and close modal
+            if (window.redrawStampVisuals) window.redrawStampVisuals();
             closeModal();
-            // Trigger visual update if needed, e.g. reload pdf or trigger custom event
-            if (window.refreshStampVisuals) window.refreshStampVisuals();
-            
-            // Refresh data viewer if it is active
-            const dataViewer = document.getElementById("data-viewer-container");
-            if (dataViewer && dataViewer.style.display !== "none") {
-                const btnViewData = document.getElementById("btn-view-project-data");
-                if (btnViewData) btnViewData.click();
-            }
+
+            // 2. Perform API calls in the background without blocking the UI
+            (async () => {
+                try {
+                    for (const up of updatesToPush) {
+                        await stampAPI.updateStampMeta(up.proj, up.pdf_path, up.page, up.xref, up.fields, up.groupId, up.stampType, up.finalPatternName);
+                    }
+                    
+                    // Apply tag rules to update stamp shapes/colors based on saved changes
+                    const projectForRules = window.currentProject || document.getElementById("current-project-label")?.textContent || "";
+                    if (projectForRules) {
+                        try {
+                            await fetch('/api/manage_tags/apply_rules', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ project: projectForRules })
+                            });
+                        } catch (rulesErr) {
+                            console.warn('apply_rules after stamp save failed:', rulesErr);
+                        }
+                    }
+                    
+                    // Trigger visual update if needed to fetch updated colors/shapes from apply_rules
+                    if (window.refreshStampVisuals) window.refreshStampVisuals();
+
+                    // Refresh data viewer if it is active (after API update)
+                    const dataViewer = document.getElementById("data-viewer-container");
+                    if (dataViewer && dataViewer.style.display !== "none") {
+                        const btnViewData = document.getElementById("btn-view-project-data");
+                        if (btnViewData) btnViewData.click();
+                    }
+                } catch (apiErr) {
+                    console.error("Background save failed:", apiErr);
+                }
+            })();
+
         } catch (e) {
             alert("Error saving metadata: " + e.message);
         }
@@ -2205,7 +2802,7 @@ function initStampAPI() {
         const btnCsvAirOutlets = document.getElementById("btn-csv-air-outlets");
         if (btnCsvAirOutlets) {
             btnCsvAirOutlets.addEventListener("click", () => {
-                downloadTableToCSV("table-air-outlets", "air_outlets.csv");
+                downloadTableToCSV("air-outlets-tables-container", "air_outlets.csv");
             });
         }
         
@@ -2217,14 +2814,17 @@ function initStampAPI() {
         }
     }
 
-    function downloadTableToCSV(tableId, filename) {
-        const table = document.getElementById(tableId);
-        if (!table) return;
+    function downloadTableToCSV(elementId, filename) {
+        const el = document.getElementById(elementId);
+        if (!el) return;
+        
+        let tables = el.tagName === "TABLE" ? [el] : Array.from(el.querySelectorAll("table.data-table"));
+        if (tables.length === 0) return;
         
         let csvContent = "";
         
-        // Headers
-        const ths = table.querySelectorAll("thead th");
+        // Headers from first table
+        const ths = tables[0].querySelectorAll("thead th");
         const headers = [];
         ths.forEach(th => {
             if (th.textContent !== "Actions") {
@@ -2234,18 +2834,20 @@ function initStampAPI() {
         csvContent += headers.map(h => `"${h.replace(/"/g, '""')}"`).join(",") + "\r\n";
         
         // Rows
-        const trs = table.querySelectorAll("tbody tr");
-        trs.forEach(tr => {
-            const tds = tr.querySelectorAll("td");
-            if (tds.length === 1 && tds[0].colSpan > 1) return; // e.g. Loading... or Error
-            if (tds.length === 0) return;
-            
-            const rowData = [];
-            // Last column is Actions, we exclude it
-            for (let i = 0; i < tds.length - 1; i++) {
-                rowData.push(`"${tds[i].textContent.replace(/"/g, '""')}"`);
-            }
-            csvContent += rowData.join(",") + "\r\n";
+        tables.forEach(table => {
+            const trs = table.querySelectorAll("tbody tr");
+            trs.forEach(tr => {
+                const tds = tr.querySelectorAll("td");
+                if (tds.length === 1 && tds[0].colSpan > 1) return; // e.g. Loading... or Error
+                if (tds.length === 0) return;
+                
+                const rowData = [];
+                // Last column is Actions, we exclude it
+                for (let i = 0; i < tds.length - 1; i++) {
+                    rowData.push(`"${tds[i].textContent.replace(/"/g, '""')}"`);
+                }
+                csvContent += rowData.join(",") + "\r\n";
+            });
         });
         
         const blob = new Blob(["\ufeff" + csvContent], { type: "text/csv;charset=utf-8;" });
@@ -2294,7 +2896,6 @@ function initStampAPI() {
     function filterAndRenderProjectData() {
         const sInput = document.getElementById("search-project-data");
         const query = sInput ? sInput.value.toLowerCase().trim() : "";
-        const tableAirOutlets = document.getElementById("table-air-outlets");
         const tableSystems = document.getElementById("table-systems");
 
         let filteredAirOutlets = allProjectAirOutlets;
@@ -2323,18 +2924,63 @@ function initStampAPI() {
             filteredSystems = allProjectSystems.filter(matchesQuery);
         }
 
-        renderDataTable(tableAirOutlets, filteredAirOutlets, query);
-        renderDataTable(tableSystems, filteredSystems, query);
+        const airOutletsContainer = document.getElementById("air-outlets-tables-container");
+        if (airOutletsContainer) {
+            airOutletsContainer.innerHTML = "";
+            
+            if (filteredAirOutlets.length === 0) {
+                airOutletsContainer.innerHTML = "<div style='padding: 20px; text-align: center; color: var(--text-secondary);'>No air outlets found.</div>";
+            } else {
+                const grouped = {};
+                filteredAirOutlets.forEach(item => {
+                    const patName = (item.fields && (item.fields["System Pattern"] || item.fields["System"])) ? 
+                                    (item.fields["System Pattern"] || item.fields["System"]) : 
+                                    "Unknown System";
+                    if (!grouped[patName]) grouped[patName] = [];
+                    grouped[patName].push(item);
+                });
+                
+                const patternNames = Object.keys(grouped).sort();
+                
+                patternNames.forEach((patName, idx) => {
+                    const header = document.createElement("h4");
+                    header.textContent = patName === "Unknown System" ? "Unknown System" : `System: ${patName}`;
+                    header.style.cssText = "margin: 0; padding: 10px 0; height: 40px; box-sizing: border-box; display: flex; align-items: center; color: var(--text-secondary); font-weight: bold; font-size: 1.1rem; position: sticky; top: 40px; background: var(--bg-dark); z-index: 10;";
+                    airOutletsContainer.appendChild(header);
+                    
+                    const scrollContainer = document.createElement("div");
+                    scrollContainer.className = "table-scroll-container";
+                    
+                    const table = document.createElement("table");
+                    table.id = `table-air-outlets-${idx}`;
+                    table.dataset.tableType = "air-outlets";
+                    table.className = "data-table";
+                    table.innerHTML = "<thead></thead><tbody></tbody>";
+                    
+                    scrollContainer.appendChild(table);
+                    airOutletsContainer.appendChild(scrollContainer);
+                    
+                    renderDataTable(table, grouped[patName], query);
+                });
+            }
+        }
+
+        if (tableSystems) {
+            renderDataTable(tableSystems, filteredSystems, query);
+        }
     }
 
     async function loadProjectData(project) {
-        const tableAirOutlets = document.getElementById("table-air-outlets");
+        const airOutletsContainer = document.getElementById("air-outlets-tables-container");
         const tableSystems = document.getElementById("table-systems");
         
-        tableAirOutlets.querySelector("thead").innerHTML = "";
-        tableAirOutlets.querySelector("tbody").innerHTML = "<tr><td>Loading...</td></tr>";
-        tableSystems.querySelector("thead").innerHTML = "";
-        tableSystems.querySelector("tbody").innerHTML = "<tr><td>Loading...</td></tr>";
+        if (airOutletsContainer) {
+            airOutletsContainer.innerHTML = "<div style='padding: 20px; text-align: center; color: var(--text-secondary);'>Loading...</div>";
+        }
+        if (tableSystems) {
+            tableSystems.querySelector("thead").innerHTML = "";
+            tableSystems.querySelector("tbody").innerHTML = "<tr><td>Loading...</td></tr>";
+        }
 
         const sInput = document.getElementById("search-project-data");
         if (sInput) sInput.value = "";
@@ -2362,8 +3008,10 @@ function initStampAPI() {
             filterAndRenderProjectData();
         } catch (e) {
             alert("Error loading data: " + e.message);
-            tableAirOutlets.querySelector("tbody").innerHTML = `<tr><td style="color:red">Error: ${e.message}</td></tr>`;
-            tableSystems.querySelector("tbody").innerHTML = `<tr><td style="color:red">Error: ${e.message}</td></tr>`;
+            const airOutletsContainer = document.getElementById("air-outlets-tables-container");
+            const tableSystems = document.getElementById("table-systems");
+            if (airOutletsContainer) airOutletsContainer.innerHTML = `<div style="color:red; padding: 20px;">Error: ${e.message}</div>`;
+            if (tableSystems) tableSystems.querySelector("tbody").innerHTML = `<tr><td style="color:red">Error: ${e.message}</td></tr>`;
         }
     }
 
@@ -2496,7 +3144,8 @@ function initStampAPI() {
             if (currentTh && currentTh.dataset.colName) {
                 const tableElem = currentTh.closest('table');
                 if (tableElem) {
-                    const widthsKey = `dataViewerColWidths_${tableElem.id}`;
+                    const widthKeyBase = tableElem.dataset.tableType === "air-outlets" ? "table-air-outlets" : tableElem.id;
+                    const widthsKey = `dataViewerColWidths_${widthKeyBase}`;
                     let widths = {};
                     try { widths = JSON.parse(localStorage.getItem(widthsKey) || '{}'); } catch(err){}
                     widths[currentTh.dataset.colName] = currentTh.style.width;
@@ -2648,7 +3297,7 @@ function initStampAPI() {
         if (tableElement.id === "table-systems") {
             fixedCols = ["UUID", "PDF File", "Page", "System"];
         } else {
-            fixedCols = ["UUID", "PDF File", "Page", "Pattern", "System Pattern"];
+            fixedCols = ["UUID", "PDF File", "Page", "Pattern", "System"];
         }
         
         const dynamicCols = Array.from(dynamicFieldsSet)
@@ -2656,13 +3305,14 @@ function initStampAPI() {
                                  .sort();
         const allFieldsArr = fixedCols.concat(dynamicCols);
 
-        const orderKey = `dataViewerColOrder_${tableElement.id}`;
+        const orderKeyBase = tableElement.dataset.tableType === "air-outlets" ? "table-air-outlets" : tableElement.id;
+        const orderKey = `dataViewerColOrder_${orderKeyBase}`;
         
         // 1. Get baseline order from settings
         let configOrder = [];
         if (tableElement.id === "table-systems") {
             configOrder = currentSettings.system_column_order || [];
-        } else if (tableElement.id === "table-air-outlets") {
+        } else if (tableElement.dataset.tableType === "air-outlets") {
             configOrder = currentSettings.air_outlet_column_order || [];
         }
         
@@ -2671,7 +3321,7 @@ function initStampAPI() {
             if (tableElement.id === "table-systems") {
                 configOrder = ["UUID", "PDF File", "Page", "System", "#", "SYSTEM TYPE", "DESIGN CFM"];
             } else {
-                configOrder = ["UUID", "PDF File", "Page", "Pattern", "System Pattern", "#", "TYPE", "SIZE", "DESIGN CFM"];
+                configOrder = ["UUID", "PDF File", "Page", "Pattern", "System", "#", "TYPE", "SIZE", "DESIGN CFM"];
             }
         }
         
@@ -2698,8 +3348,15 @@ function initStampAPI() {
                 let valB = "";
                 if (fixedCols.includes(currentSortColumn)) {
                     if (currentSortColumn === "UUID") { valA = a.stamp_uuid || a.id; valB = b.stamp_uuid || b.id; }
-                    else if (currentSortColumn === "Pattern" || currentSortColumn === "System") { valA = a.pattern_name || ""; valB = b.pattern_name || ""; }
-                    else if (currentSortColumn === "System Pattern") { valA = (a.fields && a.fields["System Pattern"]) || ""; valB = (b.fields && b.fields["System Pattern"]) || ""; }
+                    else if (currentSortColumn === "Pattern") { valA = a.pattern_name || ""; valB = b.pattern_name || ""; }
+                    else if (currentSortColumn === "System") {
+                        if (tableElement.dataset.tableType === "air-outlets") {
+                            valA = (a.fields && (a.fields["System Pattern"] || a.fields["System"])) || "";
+                            valB = (b.fields && (b.fields["System Pattern"] || b.fields["System"])) || "";
+                        } else {
+                            valA = a.pattern_name || ""; valB = b.pattern_name || "";
+                        }
+                    }
                     else if (currentSortColumn === "PDF File") { valA = a.pdf_path || ""; valB = b.pdf_path || ""; }
                     else if (currentSortColumn === "Page") { valA = a.page; valB = b.page; }
                 } else {
@@ -2718,7 +3375,8 @@ function initStampAPI() {
         }
 
         const trHead = document.createElement("tr");
-        const widthsKey = `dataViewerColWidths_${tableElement.id}`;
+        const widthKeyBase = tableElement.dataset.tableType === "air-outlets" ? "table-air-outlets" : tableElement.id;
+        const widthsKey = `dataViewerColWidths_${widthKeyBase}`;
         let savedWidths = {};
         try { savedWidths = JSON.parse(localStorage.getItem(widthsKey) || '{}'); } catch(err){}
         
@@ -2874,8 +3532,14 @@ function initStampAPI() {
                 }
             });
             
-            const addTd = (text, title, colName) => {
+            const addTd = (text, title, colName, fieldColor = null) => {
                 const td = document.createElement("td");
+                
+                if (fieldColor) {
+                    td.style.color = fieldColor;
+                    td.style.backgroundColor = fieldColor + "33";
+                    td.style.fontWeight = "bold";
+                }
                 
                 if (query && text !== undefined && text !== null && String(text).toLowerCase().includes(query)) {
                     const strText = String(text);
@@ -2908,10 +3572,26 @@ function initStampAPI() {
             sortedFields.forEach(field => {
                 if (field === "UUID") addTd(item.stamp_uuid || item.id, null, field);
                 else if (field === "Pattern") addTd(item.pattern_name ? "Pattern: " + item.pattern_name : "", null, field);
-                else if (field === "System") addTd(item.pattern_name || "", null, field);
+                else if (field === "System") {
+                    if (tableElement.dataset.tableType === "air-outlets") {
+                        addTd((item.fields && (item.fields["System Pattern"] || item.fields["System"])) ? (item.fields["System Pattern"] || item.fields["System"]) : "", null, field);
+                    } else {
+                        addTd(item.pattern_name || "", null, field);
+                    }
+                }
                 else if (field === "PDF File") addTd(item.pdf_path ? item.pdf_path.split('/').pop().replace(/\\/g, '/').split('/').pop() : 'Unknown', item.pdf_path, field);
                 else if (field === "Page") addTd(item.page, null, field);
-                else addTd(item.fields ? (item.fields[field] || "") : "", null, field);
+                else {
+                    const textVal = item.fields ? (item.fields[field] || "") : "";
+                    let color = null;
+                    if (item.conditional_formatting && item.conditional_formatting[field] && window.evaluateConditionalFormattingRaw) {
+                        try {
+                            const rules = JSON.parse(item.conditional_formatting[field]);
+                            color = window.evaluateConditionalFormattingRaw(textVal, rules, item.fields);
+                        } catch(e) {}
+                    }
+                    addTd(textVal, null, field, color);
+                }
             });
             
             const tdAction = document.createElement("td");
