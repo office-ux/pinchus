@@ -2586,14 +2586,41 @@ def update_server():
 
         project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
-        # Git Pull
-        pull_res = subprocess.run(
-            ["git", "pull"],
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-            check=True
-        )
+        # Git Pull with Fallback to Fetch & Hard Reset
+        pull_stdout = ""
+        try:
+            pull_res = subprocess.run(
+                ["git", "pull"],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            pull_stdout = pull_res.stdout
+        except subprocess.CalledProcessError as pull_err:
+            try:
+                # Fetch remote updates
+                subprocess.run(["git", "fetch", "--all"], cwd=project_dir, check=True)
+                # Stash any local uncommitted/untracked conflicts
+                subprocess.run(["git", "stash", "-u"], cwd=project_dir)
+                # Hard reset working copy to match origin/main
+                reset_res = subprocess.run(
+                    ["git", "reset", "--hard", "origin/main"],
+                    cwd=project_dir,
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                pull_stdout = (
+                    f"Standard 'git pull' failed: {pull_err.stderr.strip()}\n\n"
+                    f"Successfully performed fallback (stash & hard reset to origin/main):\n"
+                    f"{reset_res.stdout}"
+                )
+            except Exception as reset_err:
+                raise Exception(
+                    f"Update failed: 'git pull' failed ({pull_err.stderr.strip()}), "
+                    f"and fallback 'git reset' also failed ({reset_err})"
+                )
 
         # Read and modify systemd unit file to set a higher Gunicorn timeout
         service_content = ""
@@ -2631,7 +2658,7 @@ def update_server():
 
         return jsonify({
             "success": True,
-            "output": pull_res.stdout + service_content
+            "output": pull_stdout + service_content
         })
     except Exception as e:
         import traceback
