@@ -382,7 +382,7 @@ h1, h2, h3 {
 /* PDF hyperlink hit zones – always show pointer hand */
 .pdf-link-zone {
     cursor: pointer !important;
-    pointer-events: auto;
+    pointer-events: all;
 }
 
 /* When hovering any interactive overlay element, override the viewer grab cursor */

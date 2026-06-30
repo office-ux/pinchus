@@ -2,15 +2,15 @@
  * app_hybrid2.js  --  Hybrid 2 Rendering Engine
  * ============================================================================
  * Three upgrades over Hybrid Canvas:
- *  1. OffscreenCanvas + Web Worker: all vector tile painting is dispatched to
- *     hybrid2_vector_worker.js so the main UI thread is NEVER blocked.
- *  2. Canvas Tiling: pages split into a 512px tile grid; only visible tiles
- *     plus one ring of predictive pre-rendered tiles are active in the DOM.
- *  3. Predictive Pre-rendering: adjacent tiles are dispatched before the user
- *     scrolls to them so panning never reveals blank canvas areas.
+ *  1. OffscreenCanvas + Web Worker: vector tile painting is offloaded to
+ *     hybrid2_vector_worker.js so the main UI thread is never blocked.
+ *  2. Canvas Tiling: pages split into 512px grid tiles; only visible tiles
+ *     (+ 1 tile padding ring) are active in the DOM.
+ *  3. Predictive Pre-rendering: adjacent tiles are rendered before the user
+ *     scrolls to them so panning never shows blank areas.
  *
  * All other features (lasso selection, stamps, patterns, coords, inspector,
- * touch gestures, sidebar, undo) are identical to app.js.
+ * touch gestures, sidebar) are identical to app.js.
  */
 function initApp() {
     // UI Elements
@@ -68,65 +68,37 @@ function initApp() {
 
     // ── Hybrid 2: OffscreenCanvas Web Worker ─────────────────────────────────
     const H2_WORKER_PATH = '/static/js/hybrid2/hybrid2_vector_worker.js';
-    let h2Workers = [];
+    let h2Worker = null;
     let h2WorkerReady = false;
     let h2TileId = 0;
     const h2Pending = new Map();
-    let h2WorkerRoundRobin = 0;
 
     try {
-        const numWorkers = navigator.hardwareConcurrency ? Math.min(navigator.hardwareConcurrency, 8) : 4;
-        for (let i = 0; i < numWorkers; i++) {
-            const w = new Worker(H2_WORKER_PATH);
-            w.onerror = e => console.warn('[Hybrid2] Worker error:', e);
-            w.onmessage = function(e) {
-                const { type, transferId, error } = e.data;
-                const pending = h2Pending.get(transferId);
-                if (!pending) return;
-                h2Pending.delete(transferId);
-                if (type === 'TILE_DONE') pending.resolve();
-                else { console.warn('[Hybrid2] Tile error:', error); pending.reject(new Error(error)); }
-            };
-            h2Workers.push(w);
-        }
-        h2WorkerReady = h2Workers.length > 0;
-    } catch(err) {
-        console.warn('[Hybrid2] Worker unavailable, using main-thread canvas fallback', err);
-    }
-
-    const H2_DATA_WORKER_PATH = '/static/js/hybrid2/hybrid2_data_worker.js';
-    let h2DataWorker = null;
-    let h2DataReqId = 0;
-    const h2DataPending = new Map();
-
-    try {
-        h2DataWorker = new Worker(H2_DATA_WORKER_PATH);
-        h2DataWorker.onerror = e => console.warn('[Hybrid2] Data Worker error:', e);
-        h2DataWorker.onmessage = function(e) {
-            const { type, reqId, data, buffer, error } = e.data;
-            const pending = h2DataPending.get(reqId);
+        h2Worker = new Worker(H2_WORKER_PATH);
+        h2Worker.onerror = e => console.warn('[Hybrid2] Worker error:', e);
+        h2Worker.onmessage = function(e) {
+            const { type, transferId, error } = e.data;
+            const pending = h2Pending.get(transferId);
             if (!pending) return;
-            h2DataPending.delete(reqId);
-            if (type === 'FETCH_SUCCESS') {
-                pending.resolve({ data, buffer });
-            } else {
-                pending.reject(new Error(error));
-            }
+            h2Pending.delete(transferId);
+            if (type === 'TILE_DONE') pending.resolve();
+            else { console.warn('[Hybrid2] Tile error:', error); pending.reject(new Error(error)); }
         };
-    } catch(err) {
-        console.warn('[Hybrid2] Data Worker unavailable', err);
+        h2WorkerReady = true;
+    } catch(e) {
+        console.warn('[Hybrid2] Worker unavailable, using main-thread fallback', e);
     }
 
-    // Predictive pre-render: extra tile rings beyond the visible viewport
-    const H2_PRE_TILES = 2;
-
-    // Engine badge (bottom-right corner)
+    // Engine badge
     (function() {
-        var badge = document.createElement('div');
+        const badge = document.createElement('div');
         badge.style.cssText = 'position:fixed;bottom:12px;right:16px;z-index:9999;background:linear-gradient(135deg,#0d1b2a,#1a2744);border:1px solid rgba(0,255,200,0.3);color:#00ffc8;font-size:10px;font-family:monospace;padding:4px 10px;border-radius:20px;pointer-events:none;box-shadow:0 0 12px rgba(0,255,200,0.15);letter-spacing:0.5px';
-        badge.textContent = '\u26a1 Hybrid 2 | OffscreenCanvas' + (h2WorkerReady ? ' + ' + h2Workers.length + ' Workers' : '') + ' | Tiled | Predictive';
+        badge.textContent = '⚡ Hybrid 2 | OffscreenCanvas' + (h2WorkerReady ? ' + Worker' : '') + ' | Tiled | Predictive';
         document.body.appendChild(badge);
     })();
+
+    // Hybrid 2 predictive pre-render: PRE_TILES extra tile ring
+    const H2_PRE_TILES = 1;
 
     const currentRendererSetting = 'hybrid2'; // Hybrid 2 engine
     const imageCache = new Map(); // cacheKey -> image data url / cached url
@@ -1143,7 +1115,7 @@ function initApp() {
     // Intersection Observer for lazy loading pages
     const loadQueue = [];
     let activeLoads = 0;
-    const MAX_CONCURRENT_LOADS = 1; // Strictly 1 to prevent memory spikes and server DOS
+    const MAX_CONCURRENT_LOADS = 2; // Prevent locking up the Python backend
 
     function queuePageLoad(wrapper, pageNum, rid) {
         loadQueue.push({ wrapper, pageNum, rid });
@@ -1179,7 +1151,7 @@ function initApp() {
         });
     }, {
         root: viewerContainer,
-        rootMargin: '2000px' // Increased to pre-fetch ~2 pages in the background
+        rootMargin: '200px' // Reduced pre-load margin to prevent massive parallel requests
     });
 
     async function reloadView() {
@@ -1257,23 +1229,7 @@ function initApp() {
         pageWrapper.dataset.renderId = currentRenderId;
         pageWrapper.style.width = `${w}px`;
         pageWrapper.style.height = `${h}px`;
-        pageWrapper.innerHTML = `<div class="loading-text" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#94a3b8; font-family:sans-serif; z-index: 10;">Loading Page ${pageNum}...</div>`;
-        
-        // Immediately inject the low-res base layer so the browser preloads it in the background
-        const encPath = encodeURIComponent(currentPdf);
-        const img = document.createElement('img');
-        img.className = 'pdf-image';
-        img.dataset.loadedScale = 2;
-        img.src = `/api/pdf/${encPath}/page/${pageNum}/image?scale=2&t=${pdfCacheBuster}`;
-        img.style.position = 'absolute';
-        img.style.top = '0';
-        img.style.left = '0';
-        img.style.width = '100%';
-        img.style.height = '100%';
-        img.style.zIndex = '0';
-        img.style.pointerEvents = 'none';
-        pageWrapper.appendChild(img);
-
+        pageWrapper.innerHTML = `<div class="loading-text" style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:#94a3b8; font-family:sans-serif;">Loading Page ${pageNum}...</div>`;
         return pageWrapper;
     }
 
@@ -1287,171 +1243,197 @@ function initApp() {
         
         const encPath = encodeURIComponent(currentPdf);
         
-        // The low-res base image was already injected by createPagePlaceholder.
-        // We just need to clear the loading text.
-        const loadingText = wrapper.querySelector('.loading-text');
-        if (loadingText) loadingText.remove();
-
+        // Eagerly inject the base PDF image so it loads concurrently with the JSON drawings stream
+        let img = wrapper.querySelector('.pdf-image');
+        if (!img) {
+            img = document.createElement('img');
+            img.className = 'pdf-image';
+            img.dataset.loadedScale = 2;
+            img.src = `/api/pdf/${encPath}/page/${pageNum}/image?scale=2&t=${pdfCacheBuster}`;
+            wrapper.insertBefore(img, wrapper.firstChild);
+        }
+        
         try {
             console.time(`fetchDrawings_page_${pageNum}`);
-            if (pageNum === 1) setLoadingProgress(70, 'Fetching drawing data…');
+            if (pageNum === 1) setLoadingProgress(70, 'Fetching drawing data… (Connecting)');
+            const res = await fetch(`/api/pdf/${encPath}/page/${pageNum}/drawings`);
             
-            let data, buffer;
-            if (h2DataWorker && h2WorkerReady) {
-                // Fetch and Parse via Data Worker
-                const reqId = ++h2DataReqId;
-                const p = new Promise((resolve, reject) => {
-                    h2DataPending.set(reqId, { resolve, reject });
-                });
-                h2DataWorker.postMessage({
-                    type: 'FETCH_PAGE',
-                    url: `/api/pdf/${encPath}/page/${pageNum}/drawings`,
-                    reqId: reqId
-                });
-                const result = await p;
-                data = result.data;
-                buffer = result.buffer;
-            } else {
-                // Main-thread fallback
-                const res = await fetch(`/api/pdf/${encPath}/page/${pageNum}/drawings`);
-                data = await res.json();
+            // Read response stream to report real-time download progress
+            const contentLength = res.headers.get('content-length');
+            const total = contentLength ? parseInt(contentLength, 10) : 0;
+            let loaded = 0;
+            
+            const reader = res.body.getReader();
+            const chunks = [];
+            
+            while(true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                loaded += value.length;
+                
+                if (pageNum === 1) {
+                    const mbLoaded = (loaded / 1024 / 1024).toFixed(1);
+                    if (total) {
+                        const mbTotal = (total / 1024 / 1024).toFixed(1);
+                        const pct = Math.round((loaded / total) * 100);
+                        // Map 0-100% download to 70-80% overall progress
+                        setLoadingProgress(70 + (pct * 0.1), `Fetching drawing data… ${mbLoaded}MB / ${mbTotal}MB (${pct}%)`);
+                    } else {
+                        setLoadingProgress(75, `Fetching drawing data… ${mbLoaded}MB downloaded`);
+                    }
+                }
             }
             
+            // Reconstruct JSON from stream chunks
+            if (pageNum === 1) setLoadingProgress(80, 'Parsing drawing data…');
+            const allChunks = new Uint8Array(loaded);
+            let position = 0;
+            for(let chunk of chunks) {
+                allChunks.set(chunk, position);
+                position += chunk.length;
+            }
+            const text = new TextDecoder("utf-8").decode(allChunks);
+            const data = JSON.parse(text);
             console.timeEnd(`fetchDrawings_page_${pageNum}`);
             
             if (renderId !== currentRenderId) return null; // Abort
             if (data.error) throw new Error(data.error);
             
             pagesData.set(pageNum, data);
-
-            if (h2WorkerReady && buffer) {
-                h2Workers.forEach(w => w.postMessage({
-                    type: 'INIT_PAGE',
-                    pageNum: pageNum,
-                    buffer: buffer,
-                    bounds: data.page_bounds
-                }));
-            }
-
-            // Set dimensions now that we have bounds
+            
+            const loadingText = wrapper.querySelector('.loading-text');
+            if (loadingText) loadingText.remove(); // clear loading text
+            
+            // Set dimensions
             wrapper.style.width = `${data.page_bounds.width}px`;
             wrapper.style.height = `${data.page_bounds.height}px`;
-
+            
+            if (pageNum === 1) setLoadingProgress(80, 'Fetching PDF image…');
+            
             // Create SVG Overlay
             const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             svg.setAttribute('class', 'vector-overlay page-svg');
             svg.setAttribute('preserveAspectRatio', 'none');
             svg.setAttribute('viewBox', `0 0 ${data.page_bounds.width} ${data.page_bounds.height}`);
             
+            // img is already inside wrapper, just append svg
             wrapper.appendChild(svg);
             
             if (pageNum === 1) setLoadingProgress(90, 'Building overlays…');
             
-            // Hit-testing in Hybrid 2 is handled purely by CanvasVectorRenderer which keeps data.drawings in memory.
-            // We DO NOT want to create 80,000 raw SVG elements in Hybrid 2, as it freezes the browser.
-            if (currentRendererSetting !== 'hybrid2') {
-                data.drawings = data.drawings || [];
+            // Map globalIds and pre-calculate area to prevent O(N log N) freezing during sort
+            data.drawings.forEach(item => {
+                const globalId = `p${pageNum}-${item.id}`;
+                item.globalId = globalId;
+                item.page = pageNum;
                 
-                // Map globalIds and pre-calculate area to prevent O(N log N) freezing during sort
-                data.drawings.forEach(item => {
-                    const globalId = `p${pageNum}-${item.id}`;
-                    item.globalId = globalId;
-                    item.page = pageNum;
-                    
-                    // Pre-calculate area for sorting
-                    if (item.type === 'Line') item._cachedArea = 0;
-                    else if (item.type === 'Rect') item._cachedArea = Math.abs(item.width * item.height);
-                    else if (item.type === 'Polygon' || item.type === 'Arc/Curve') {
-                        const xs = item.points.map(p => p[0]);
-                        const ys = item.points.map(p => p[1]);
-                        item._cachedArea = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
-                    } else {
-                        item._cachedArea = 0;
-                    }
-                });
-                
-                // Sort drawings by area in descending order (largest first, smallest last)
-                data.drawings.sort((a, b) => b._cachedArea - a._cachedArea);
-                
-                // Render SVG vectors or instantiate hit detector
-                if (showVectors) {
-                    if ((currentRendererSetting === 'canvas' || currentRendererSetting === 'hybrid2') || currentRendererSetting === 'hybrid2') {
-                        console.time(`initCanvasRenderer_page_${pageNum}`);
-                        const renderer = new CanvasVectorRenderer(wrapper, data.page_bounds, data.drawings, pageNum);
-                        canvasRenderers.set(pageNum, renderer);
-                        console.timeEnd(`initCanvasRenderer_page_${pageNum}`);
-                        // Draw initial highlights
-                        setTimeout(() => refreshCanvasHighlights(), 0);
-                    } else {
-                        data.drawings.forEach(item => {
-                            let el;
-                            if (item.type === 'Line') {
-                                el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                                el.setAttribute('x1', item.start[0]); el.setAttribute('y1', item.start[1]);
-                                el.setAttribute('x2', item.end[0]); el.setAttribute('y2', item.end[1]);
-                            } else if (item.type === 'Rect') {
-                                el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-                                el.setAttribute('x', item.x); el.setAttribute('y', item.y);
-                                el.setAttribute('width', item.width); el.setAttribute('height', item.height);
-                            } else if (item.type === 'Polygon') {
-                                el = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-                                const ptsStr = item.points.map(p => `${p[0]},${p[1]}`).join(' ');
-                                el.setAttribute('points', ptsStr);
-                            } else if (item.type === 'Arc/Curve') {
-                                el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-                                const pts = item.points;
-                                el.setAttribute('d', `M ${pts[0][0]} ${pts[0][1]} C ${pts[1][0]} ${pts[1][1]}, ${pts[2][0]} ${pts[2][1]}, ${pts[3][0]} ${pts[3][1]}`);
-                            }
-                            
-                            if (el) {
-                                el.classList.add('vector-item');
-                                const globalId = item.globalId;
-                                el.id = `vec-${globalId}`;
-                                
-                                el.style.setProperty('--base-width', `${Math.max(item.thickness, 0.5)}px`);
-                                el.style.strokeWidth = `${Math.max(item.thickness, 0.5)}px`;
-                                el.style.stroke = item.color_hex || '#000000';
-                                el.style.fill = 'none'; // Must be none, otherwise it obscures text on the base image
-                                el.setAttribute('opacity', '0'); // Hidden by default (CSS handles hover visibility)
-                                
-                                el.dataset.id = globalId;
-                                
-                                // Create an invisible wider hit target for easier mouse interaction
-                                const hitTarget = el.cloneNode(true);
-                                hitTarget.removeAttribute('id');
-                                hitTarget.removeAttribute('opacity');
-                                hitTarget.classList.remove('vector-item');
-                                hitTarget.classList.add('vector-item-hit-target');
-                                hitTarget.style.stroke = item.color_hex || '#000000';
-                                hitTarget.style.strokeOpacity = '0';
-                                hitTarget.style.strokeWidth = '10px';
-                                hitTarget.style.fill = 'none';
-                                
-                                // Store item data for event delegation
-                                hitTarget._itemData = item;
-                                
-                                // Append hitTarget FIRST, then visible el SECOND to support CSS sibling selector '+'
-                                svg.appendChild(hitTarget);
-                                svg.appendChild(el);
-                                
-                                if (selectedItems.has(globalId)) {
-                                    el.classList.add('selected');
-                                }
-                                if (highlightedItemId === globalId) {
-                                    el.classList.add('highlighted');
-                                    console.log(`[Load Page Content] Re-applied highlighted class to: vec-${globalId}`, el);
-                                }
-                            }
-                        });
-                    }
-                } // end if (showVectors)
-            } else {
-                // If Hybrid 2 is active, we don't need the SVG DOM elements.
-                // However, CanvasVectorRenderer ALREADY holds a reference to data.drawings
-                // and handles click hit-testing mathematically against the raw coordinates!
-            }
+                // Pre-calculate area for sorting
+                if (item.type === 'Line') item._cachedArea = 0;
+                else if (item.type === 'Rect') item._cachedArea = Math.abs(item.width * item.height);
+                else if (item.type === 'Polygon' || item.type === 'Arc/Curve') {
+                    const xs = item.points.map(p => p[0]);
+                    const ys = item.points.map(p => p[1]);
+                    item._cachedArea = (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+                } else {
+                    item._cachedArea = 0;
+                }
+            });
             
-            // Render clickable hyperlink zones on SVG overlay
+            // Sort drawings by area in descending order (largest first, smallest last)
+            // This ensures smaller hit targets are rendered on top of larger ones (e.g. background rects)
+            data.drawings.sort((a, b) => b._cachedArea - a._cachedArea);
+            
+            // Render SVG vectors
+            if (showVectors) {
+                if ((currentRendererSetting === 'canvas' || currentRendererSetting === 'hybrid2')) {
+                    console.time(`initCanvasRenderer_page_${pageNum}`);
+                    const renderer = new CanvasVectorRenderer(wrapper, data.page_bounds, data.drawings, pageNum);
+                    canvasRenderers.set(pageNum, renderer);
+                    console.timeEnd(`initCanvasRenderer_page_${pageNum}`);
+                    
+                    // Eagerly compile drawings to binary and initialize the worker index
+                    if (h2WorkerReady && h2Worker) {
+                        try {
+                            const buffer = compileDrawingsToBinary(data.drawings);
+                            h2Worker.postMessage({
+                                type: 'INIT_PAGE',
+                                pageNum: pageNum,
+                                bounds: data.page_bounds,
+                                buffer: buffer
+                            }, [buffer.buffer]);
+                        } catch (e) {
+                            console.warn('[Hybrid2] Failed to initialize worker page index:', e);
+                        }
+                    }
+                    
+                    // Draw initial highlights
+                    setTimeout(() => refreshCanvasHighlights(), 0);
+                } else {
+                    data.drawings.forEach(item => {
+                        let el;
+                        if (item.type === 'Line') {
+                            el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                            el.setAttribute('x1', item.start[0]); el.setAttribute('y1', item.start[1]);
+                            el.setAttribute('x2', item.end[0]); el.setAttribute('y2', item.end[1]);
+                        } else if (item.type === 'Rect') {
+                            el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                            el.setAttribute('x', item.x); el.setAttribute('y', item.y);
+                            el.setAttribute('width', item.width); el.setAttribute('height', item.height);
+                        } else if (item.type === 'Polygon') {
+                            el = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                            const ptsStr = item.points.map(p => `${p[0]},${p[1]}`).join(' ');
+                            el.setAttribute('points', ptsStr);
+                        } else if (item.type === 'Arc/Curve') {
+                            el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                            const pts = item.points;
+                            el.setAttribute('d', `M ${pts[0][0]} ${pts[0][1]} C ${pts[1][0]} ${pts[1][1]}, ${pts[2][0]} ${pts[2][1]}, ${pts[3][0]} ${pts[3][1]}`);
+                        }
+                        
+                        if (el) {
+                            el.classList.add('vector-item');
+                            const globalId = item.globalId;
+                            el.id = `vec-${globalId}`;
+                            
+                            el.style.setProperty('--base-width', `${Math.max(item.thickness, 0.5)}px`);
+                            el.style.strokeWidth = `${Math.max(item.thickness, 0.5)}px`;
+                            el.style.stroke = item.color_hex || '#000000';
+                            el.style.fill = 'none'; // Must be none, otherwise it obscures text on the base image
+                            el.setAttribute('opacity', '0'); // Hidden by default (CSS handles hover visibility)
+                            
+                            el.dataset.id = globalId;
+                            
+                            // Create an invisible wider hit target for easier mouse interaction
+                            const hitTarget = el.cloneNode(true);
+                            hitTarget.removeAttribute('id');
+                            hitTarget.removeAttribute('opacity');
+                            hitTarget.classList.remove('vector-item');
+                            hitTarget.classList.add('vector-item-hit-target');
+                            hitTarget.style.stroke = item.color_hex || '#000000';
+                            hitTarget.style.strokeOpacity = '0';
+                            hitTarget.style.strokeWidth = '10px';
+                            hitTarget.style.fill = 'none';
+                            
+                            // Store item data for event delegation
+                            hitTarget._itemData = item;
+                            
+                            // Append hitTarget FIRST, then visible el SECOND to support CSS sibling selector '+'
+                            svg.appendChild(hitTarget);
+                            svg.appendChild(el);
+                            
+                            if (selectedItems.has(globalId)) {
+                                el.classList.add('selected');
+                            }
+                            if (highlightedItemId === globalId) {
+                                el.classList.add('highlighted');
+                                console.log(`[Load Page Content] Re-applied highlighted class to: vec-${globalId}`, el);
+                            }
+                        }
+                    });
+                }
+            } // end if (showVectors)
+            
+            // Render clickable hyperlink zones on SVG overlay FIRST so they sit behind stamps
             if (data.links && data.links.length > 0) {
                 data.links.forEach(link => {
                     const linkEl = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -1489,14 +1471,14 @@ function initApp() {
                     svg.appendChild(linkEl);
                 });
             }
-            
+
             overlayPatternRects(pageNum, svg);
             overlayStampRects(pageNum, svg);
             return { bounds: data.page_bounds };
             
         } catch (e) {
             console.error(`Failed to load page ${pageNum}:`, e);
-            wrapper.innerHTML = `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:rgba(255,0,0,0.1); border:2px solid red; color:red; padding:20px; font-size:24px; font-weight:bold; border-radius:8px; z-index:9999;">Error loading page ${pageNum}:<br><span style="font-size:16px">${e.message}</span></div>`;
+            wrapper.innerHTML = `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color:red;">Error loading page ${pageNum}</div>`;
             return null;
         }
     }
@@ -1556,24 +1538,6 @@ function initApp() {
         });
     }
 
-    let resolutionUpdateTimeout = null;
-    let lastResolutionUpdateTime = 0;
-    
-    function scheduleResolutionUpdate() {
-        const now = Date.now();
-        if (now - lastResolutionUpdateTime > 150) {
-            updateImageResolutions();
-            lastResolutionUpdateTime = now;
-            if (resolutionUpdateTimeout) clearTimeout(resolutionUpdateTimeout);
-        } else {
-            if (resolutionUpdateTimeout) clearTimeout(resolutionUpdateTimeout);
-            resolutionUpdateTimeout = setTimeout(() => {
-                updateImageResolutions();
-                lastResolutionUpdateTime = Date.now();
-            }, 150);
-        }
-    }
-
     // --- Viewport & Transform (Zoom/Pan) ---
     let transformUpdatePending = false;
     function updateTransform() {
@@ -1582,7 +1546,6 @@ function initApp() {
         requestAnimationFrame(() => {
             transformUpdatePending = false;
             applyTransform();
-            scheduleResolutionUpdate();
         });
     }
 
@@ -1891,130 +1854,6 @@ function initApp() {
 
     const activeTileFetches = new Map(); // Track ongoing image fetches
 
-    // ── Hybrid 2: OffscreenCanvas Worker Vector Tile Manager ─────────────────
-    function h2UpdateWorkerVectorTiles(wrapper, pageNum, renderer,
-                                       fetchScale, startCol, endCol, startRow, endRow,
-                                       unscaledTileSize, maxW, maxH) {
-        var newActiveKeys = new Set();
-        var svgOverlay = wrapper.querySelector('.vector-overlay');
-        var pageData = pagesData.get(pageNum);
-        if (!pageData) return;
-
-        var centerCol = (startCol + endCol) / 2;
-        var centerRow = (startRow + endRow) / 2;
-        var tileQueue = [];
-
-        for (var row = startRow; row <= endRow; row++) {
-            for (var col = startCol; col <= endCol; col++) {
-                var tileX = col * unscaledTileSize;
-                var tileY = row * unscaledTileSize;
-                var tileW = Math.min(unscaledTileSize, maxW - tileX);
-                var tileH = Math.min(unscaledTileSize, maxH - tileY);
-                if (tileW <= 0 || tileH <= 0) continue;
-
-                var tileKey = 'h2vec_' + pageNum + '_' + fetchScale + '_' + col + '_' + row;
-                newActiveKeys.add(tileKey);
-
-                if (wrapper.querySelector('.h2-vector-tile[data-tile-key="' + tileKey + '"]')) continue;
-                
-                var dist = Math.hypot(col - centerCol, row - centerRow);
-                tileQueue.push({ col, row, tileX, tileY, tileW, tileH, tileKey, dist });
-            }
-        }
-        
-        wrapper._h2ActiveKeys = newActiveKeys;
-        
-        // Remove off-screen tiles of the CURRENT zoom level to save memory.
-        // Keep ALL tiles from PREVIOUS zoom levels in the background to prevent white flashes!
-        wrapper.querySelectorAll('.h2-vector-tile').forEach(function(t) {
-            if (parseInt(t.dataset.fetchScale) === fetchScale && !newActiveKeys.has(t.dataset.tileKey)) {
-                t.remove();
-            } else if (parseInt(t.dataset.fetchScale) !== fetchScale) {
-                t.style.zIndex = '2';
-            }
-        });
-
-        if (tileQueue.length === 0) {
-            wrapper.querySelectorAll('.h2-vector-tile').forEach(function(t) {
-                if (parseInt(t.dataset.fetchScale) !== fetchScale) t.remove();
-            });
-            return;
-        }
-
-        // Center-out rendering: sort by distance to center
-        tileQueue.sort((a, b) => a.dist - b.dist);
-
-        wrapper._h2PendingCount = (wrapper._h2PendingCount || 0) + tileQueue.length;
-
-        var checkCleanup = function() {
-            wrapper._h2PendingCount--;
-            if (wrapper._h2PendingCount <= 0) {
-                wrapper._h2PendingCount = 0;
-                wrapper.querySelectorAll('.h2-vector-tile').forEach(function(t) {
-                    if (!wrapper._h2ActiveKeys.has(t.dataset.tileKey)) t.remove();
-                });
-            }
-        };
-
-        // Safety net in case worker crashes
-        if (wrapper._h2SafetyTimeout) clearTimeout(wrapper._h2SafetyTimeout);
-        wrapper._h2SafetyTimeout = setTimeout(() => {
-            if (wrapper._h2PendingCount > 0) {
-                wrapper._h2PendingCount = 0;
-                wrapper.querySelectorAll('.h2-vector-tile').forEach(function(t) {
-                    if (!wrapper._h2ActiveKeys.has(t.dataset.tileKey)) t.remove();
-                });
-            }
-        }, 3000);
-
-        tileQueue.forEach(function(item) {
-            var nativeW = Math.round(item.tileW * fetchScale);
-            var nativeH = Math.round(item.tileH * fetchScale);
-
-            var canvas = document.createElement('canvas');
-            canvas.className = 'h2-vector-tile';
-            canvas.dataset.tileKey = item.tileKey;
-            canvas.dataset.fetchScale = fetchScale;
-            canvas.width = nativeW;
-            canvas.height = nativeH;
-            canvas.style.position = 'absolute';
-            canvas.style.left = item.tileX + 'px';
-            canvas.style.top = item.tileY + 'px';
-            canvas.style.width = nativeW + 'px';
-            canvas.style.height = nativeH + 'px';
-            canvas.style.transformOrigin = '0 0';
-            canvas.style.transform = 'scale(' + (1 / fetchScale) + ')';
-            canvas.style.pointerEvents = 'none';
-            canvas.style.zIndex = '3';
-
-            if (svgOverlay) wrapper.insertBefore(canvas, svgOverlay);
-            else wrapper.appendChild(canvas);
-
-            if (h2WorkerReady && typeof canvas.transferControlToOffscreen === 'function') {
-                (function(cvs, id, tX, tY, tW, tH, fS) {
-                    var offscreen = cvs.transferControlToOffscreen();
-                    offscreen.width = Math.round(tW * fS);
-                    offscreen.height = Math.round(tH * fS);
-                    h2Pending.set(id, { resolve: checkCleanup, reject: function(e){ console.warn(e); checkCleanup(); } });
-                    
-                    var worker = h2Workers[h2WorkerRoundRobin];
-                    h2WorkerRoundRobin = (h2WorkerRoundRobin + 1) % h2Workers.length;
-                    
-                    worker.postMessage({
-                        type: 'RENDER_VECTOR_TILE',
-                        transferId: id,
-                        offscreen: offscreen,
-                        pageNum: pageNum,
-                        tileX: tX, tileY: tY, tileW: tW, tileH: tH, fetchScale: fS
-                    }, [offscreen]);
-                })(canvas, ++h2TileId, item.tileX, item.tileY, item.tileW, item.tileH, fetchScale);
-            } else {
-                renderer.updateVectorTiles(fetchScale, item.col, item.col, item.row, item.row, unscaledTileSize, maxW, maxH);
-                checkCleanup();
-            }
-        });
-    }
-
     function updateImageResolutions() {
         const dpr = window.devicePixelRatio || 1;
         const reqScale = scale * dpr;
@@ -2043,7 +1882,7 @@ function initApp() {
             const intersectHeight = intersectBottom - intersectTop;
 
             if (intersectWidth <= 0 || intersectHeight <= 0) {
-                wrapper.querySelectorAll('.pdf-tile, .h2-vector-tile').forEach(t => t.remove());
+                wrapper.querySelectorAll('.pdf-tile').forEach(t => t.remove());
                 wrapper.querySelectorAll('.vector-tile').forEach(t => t.remove());
                 return;
             }
@@ -2053,7 +1892,7 @@ function initApp() {
             let cx1 = cx0 + (intersectWidth / scale);
             let cy1 = cy0 + (intersectHeight / scale);
 
-            const padding = unscaledTileSize * (0.5 + H2_PRE_TILES); // Hybrid2: predictive
+            const padding = unscaledTileSize * (0.5 + H2_PRE_TILES); // Hybrid2 predictive
             cx0 = Math.max(0, cx0 - padding);
             cy0 = Math.max(0, cy0 - padding);
             
@@ -2068,34 +1907,28 @@ function initApp() {
             const endCol = Math.floor(cx1 / unscaledTileSize);
             const endRow = Math.floor(cy1 / unscaledTileSize);
 
-            // Vector tiles are dispatched in Canvas Mode or Hybrid 2 Mode
+            // Always update Vector Tiles if in Canvas Mode
+            // Hybrid 2: always use canvas renderer for hit-testing index,
+            // but dispatch tile painting to OffscreenCanvas worker
             if (showVectors) {
                 const renderer = canvasRenderers.get(parseInt(pageNum));
                 if (renderer) {
+                    // Offscreen worker path
                     h2UpdateWorkerVectorTiles(wrapper, parseInt(pageNum), renderer,
                         fetchScale, startCol, endCol, startRow, endRow,
                         unscaledTileSize, maxW, maxH);
                 }
             }
 
-            wrapper.dataset.currentFetchScale = fetchScale;
-
-            // Cancel any in-flight fetches for old zoom levels
-            for (const [key, img] of activeTileFetches.entries()) {
-                const parts = key.split('_');
-                const tPage = parts[0];
-                const tScale = parseInt(parts[1]);
-                if (tPage === pageNum && tScale !== fetchScale) {
-                    img.src = '';
-                    activeTileFetches.delete(key);
-                }
+            // If we are at a low zoom, we don't need PDF image tiles.
+            if (reqScale <= 2.5) {
+                wrapper.querySelectorAll('.pdf-tile').forEach(t => t.remove());
+                return;
             }
 
-            var centerCol = (startCol + endCol) / 2;
-            var centerRow = (startRow + endRow) / 2;
-            var imageQueue = [];
-            var newImageKeys = new Set();
+            wrapper.dataset.currentFetchScale = fetchScale;
 
+            const activeTileKeys = new Set();
             for (let row = startRow; row <= endRow; row++) {
                 for (let col = startCol; col <= endCol; col++) {
                     const tileX = col * unscaledTileSize;
@@ -2106,103 +1939,94 @@ function initApp() {
                     if (tileW <= 0 || tileH <= 0) continue;
 
                     const tileKey = `${pageNum}_${fetchScale}_${col}_${row}`;
-                    newImageKeys.add(tileKey);
-
-                    if (wrapper.querySelector(`.pdf-tile[data-tile-key="${tileKey}"]`)) {
-                        continue;
-                    }
-
-                    var dist = Math.hypot(col - centerCol, row - centerRow);
-                    imageQueue.push({ col, row, tileX, tileY, tileW, tileH, tileKey, dist });
+                    activeTileKeys.add(tileKey);
                 }
             }
 
-            wrapper._imgActiveKeys = newImageKeys;
+            // Cancel any in-flight fetches for old zoom levels OR off-screen tiles
+            for (const [key, img] of activeTileFetches.entries()) {
+                const parts = key.split('_');
+                const tPage = parts[0];
+                if (tPage === pageNum && !activeTileKeys.has(key)) {
+                    img.src = '';
+                    activeTileFetches.delete(key);
+                }
+            }
 
-            // Prune off-screen tiles of the CURRENT fetch scale immediately
-            // Push old fetch scale tiles to zIndex: 1
+            for (const tileKey of activeTileKeys) {
+                const parts = tileKey.split('_');
+                const col = parseInt(parts[2]);
+                const row = parseInt(parts[3]);
+                
+                const tileX = col * unscaledTileSize;
+                const tileY = row * unscaledTileSize;
+                const tileW = Math.min(unscaledTileSize, maxW - tileX);
+                const tileH = Math.min(unscaledTileSize, maxH - tileY);
+
+                if (wrapper.querySelector(`.pdf-tile[data-tile-key="${tileKey}"]`)) {
+                    continue;
+                }
+
+                    const encPath = encodeURIComponent(currentPdf);
+                    const clipParam = `${tileX},${tileY},${tileW},${tileH}`;
+                    
+                    // The server returns an image of (tileW*fetchScale) x (tileH*fetchScale) pixels.
+                    // We set the CSS dimensions to those NATIVE pixel dimensions so Chrome
+                    // rasterizes the full resolution. Then we use CSS transform: scale(counterScale)
+                    // to shrink it back down to fit the unscaled coordinate system.
+                    // When the parent panZoomContainer applies scale(zoom), the two scales
+                    // combine to produce the correct on-screen size at full resolution.
+                    const nativeW = tileW * fetchScale;
+                    const nativeH = tileH * fetchScale;
+                    
+                    const tempImg = new Image();
+                    activeTileFetches.set(tileKey, tempImg);
+
+                    tempImg.className = 'pdf-tile';
+                    tempImg.dataset.tileKey = tileKey;
+                    tempImg.dataset.fetchScale = fetchScale;
+                    tempImg.style.left = `${tileX}px`;
+                    tempImg.style.top = `${tileY}px`;
+                    tempImg.style.width = `${nativeW}px`;
+                    tempImg.style.height = `${nativeH}px`;
+                    tempImg.style.transformOrigin = '0 0';
+                    tempImg.style.transform = `scale(${counterScale})`;
+                    
+                    tempImg.src = `/api/pdf/${encPath}/page/${pageNum}/image?scale=${fetchScale}&clip=${clipParam}&t=${pdfCacheBuster}`;
+                    
+                    tempImg.onload = () => {
+                        activeTileFetches.delete(tileKey);
+                        if (parseInt(wrapper.dataset.currentFetchScale) !== fetchScale) {
+                            return;
+                        }
+                        
+                        const overlay = wrapper.querySelector('.vector-overlay');
+                        if (overlay) {
+                            wrapper.insertBefore(tempImg, overlay);
+                        } else {
+                            wrapper.appendChild(tempImg);
+                        }
+                        
+                        setTimeout(() => tempImg.classList.add('loaded'), 10);
+                    };
+
+                    tempImg.onerror = () => {
+                        activeTileFetches.delete(tileKey);
+                    };
+            }
+
+            // Prune off-screen tiles
             wrapper.querySelectorAll('.pdf-tile').forEach(t => {
-                if (parseInt(t.dataset.fetchScale) === fetchScale && !newImageKeys.has(t.dataset.tileKey)) {
-                    t.remove();
-                } else if (parseInt(t.dataset.fetchScale) !== fetchScale) {
-                    t.style.zIndex = '1';
+                const tx = parseFloat(t.style.left);
+                const ty = parseFloat(t.style.top);
+                // Use unscaled tile dimensions for bounds checking
+                const tScale = parseInt(t.dataset.fetchScale) || fetchScale;
+                const tw = parseFloat(t.style.width) / tScale;
+                const th = parseFloat(t.style.height) / tScale;
+                
+                if (tx + tw < cx0 || tx > cx1 || ty + th < cy0 || ty > cy1) {
+                    t.remove(); 
                 }
-            });
-
-            if (imageQueue.length === 0) {
-                wrapper.querySelectorAll('.pdf-tile').forEach(function(t) {
-                    if (parseInt(t.dataset.fetchScale) !== fetchScale) t.remove();
-                });
-                return;
-            }
-
-            // Center-out loading for images
-            imageQueue.sort((a, b) => a.dist - b.dist);
-
-            wrapper._imgPendingCount = (wrapper._imgPendingCount || 0) + imageQueue.length;
-
-            var checkImgCleanup = function() {
-                wrapper._imgPendingCount--;
-                if (wrapper._imgPendingCount <= 0) {
-                    wrapper._imgPendingCount = 0;
-                    wrapper.querySelectorAll('.pdf-tile').forEach(function(t) {
-                        if (!wrapper._imgActiveKeys.has(t.dataset.tileKey)) t.remove();
-                    });
-                }
-            };
-
-            // Safety net
-            if (wrapper._imgSafetyTimeout) clearTimeout(wrapper._imgSafetyTimeout);
-            wrapper._imgSafetyTimeout = setTimeout(() => {
-                if (wrapper._imgPendingCount > 0) {
-                    wrapper._imgPendingCount = 0;
-                    wrapper.querySelectorAll('.pdf-tile').forEach(function(t) {
-                        if (!wrapper._imgActiveKeys.has(t.dataset.tileKey)) t.remove();
-                    });
-                }
-            }, 3000);
-
-            imageQueue.forEach(item => {
-                const encPath = encodeURIComponent(currentPdf);
-                const clipParam = `${item.tileX},${item.tileY},${item.tileW},${item.tileH}`;
-                
-                const nativeW = item.tileW * fetchScale;
-                const nativeH = item.tileH * fetchScale;
-                
-                const tempImg = new Image();
-                activeTileFetches.set(item.tileKey, tempImg);
-
-                tempImg.className = 'pdf-tile';
-                tempImg.dataset.tileKey = item.tileKey;
-                tempImg.dataset.fetchScale = fetchScale;
-                tempImg.style.left = `${item.tileX}px`;
-                tempImg.style.top = `${item.tileY}px`;
-                tempImg.style.width = `${nativeW}px`;
-                tempImg.style.height = `${nativeH}px`;
-                tempImg.style.transformOrigin = '0 0';
-                tempImg.style.transform = `scale(${counterScale})`;
-                tempImg.style.zIndex = '2'; // new tiles load on top of stale ones
-                
-                tempImg.src = `/api/pdf/${encPath}/page/${pageNum}/image?scale=${fetchScale}&clip=${clipParam}&t=${pdfCacheBuster}`;
-                
-                tempImg.onload = () => {
-                    activeTileFetches.delete(item.tileKey);
-                    
-                    const overlay = wrapper.querySelector('.vector-overlay');
-                    if (overlay) {
-                        wrapper.insertBefore(tempImg, overlay);
-                    } else {
-                        wrapper.appendChild(tempImg);
-                    }
-                    
-                    setTimeout(() => tempImg.classList.add('loaded'), 10);
-                    checkImgCleanup();
-                };
-
-                tempImg.onerror = () => {
-                    activeTileFetches.delete(item.tileKey);
-                    checkImgCleanup();
-                };
             });
         });
     }
@@ -5739,4 +5563,130 @@ if (document.readyState === 'loading') {
     document.addEventListener("DOMContentLoaded", initApp);
 } else {
     initApp();
+    // ── Hybrid 2: OffscreenCanvas Worker Vector Tile Manager ─────────────────
+    function h2UpdateWorkerVectorTiles(wrapper, pageNum, renderer, fetchScale,
+                                       startCol, endCol, startRow, endRow,
+                                       unscaledTileSize, maxW, maxH) {
+        const activeTileKeys = new Set();
+        const svgOverlay = wrapper.querySelector('.vector-overlay');
+        const pageData = pagesData.get(pageNum);
+        if (!pageData) return;
+
+        for (let row = startRow; row <= endRow; row++) {
+            for (let col = startCol; col <= endCol; col++) {
+                const tileX = col * unscaledTileSize;
+                const tileY = row * unscaledTileSize;
+                const tileW = Math.min(unscaledTileSize, maxW - tileX);
+                const tileH = Math.min(unscaledTileSize, maxH - tileY);
+                if (tileW <= 0 || tileH <= 0) continue;
+
+                const tileKey = `h2vec_${pageNum}_${fetchScale}_${col}_${row}`;
+                activeTileKeys.add(tileKey);
+
+                if (wrapper.querySelector(`.h2-vector-tile[data-tile-key="${tileKey}"]`)) continue;
+
+                const nativeW = Math.round(tileW * fetchScale);
+                const nativeH = Math.round(tileH * fetchScale);
+
+                const canvas = document.createElement('canvas');
+                canvas.className = 'h2-vector-tile';
+                canvas.dataset.tileKey = tileKey;
+                canvas.dataset.fetchScale = fetchScale;
+                canvas.width = nativeW;
+                canvas.height = nativeH;
+                canvas.style.position = 'absolute';
+                canvas.style.left = `${tileX}px`;
+                canvas.style.top = `${tileY}px`;
+                canvas.style.width = `${nativeW}px`;
+                canvas.style.height = `${nativeH}px`;
+                canvas.style.transformOrigin = '0 0';
+                canvas.style.transform = `scale(${1 / fetchScale})`;
+                canvas.style.pointerEvents = 'none';
+                canvas.style.zIndex = '3';
+
+                if (svgOverlay) wrapper.insertBefore(canvas, svgOverlay);
+                else wrapper.appendChild(canvas);
+
+                // Dispatch to worker (OffscreenCanvas) or fallback to main thread
+                if (h2WorkerReady && typeof canvas.transferControlToOffscreen === 'function') {
+                    const id = ++h2TileId;
+                    h2Pending.set(id, {
+                        resolve: () => {},
+                        reject: (e) => console.warn('[Hybrid2]', e)
+                    });
+                    const offscreen = canvas.transferControlToOffscreen();
+                    offscreen.width = nativeW;
+                    offscreen.height = nativeH;
+                    h2Worker.postMessage({
+                        type: 'RENDER_VECTOR_TILE',
+                        transferId: id,
+                        offscreen,
+                        drawings: pageData.drawings,
+                        bounds: pageData.page_bounds,
+                        pageNum,
+                        tileX, tileY, tileW, tileH, fetchScale
+                    }, [offscreen]);
+                } else {
+                    // Main-thread fallback using CanvasVectorRenderer
+                    renderer.updateVectorTiles(fetchScale, col, col, row, row, unscaledTileSize, maxW, maxH);
+                }
+            }
+        }
+
+        // Prune stale worker vector tiles
+        wrapper.querySelectorAll('.h2-vector-tile').forEach(t => {
+            if (!activeTileKeys.has(t.dataset.tileKey)) t.remove();
+        });
+    }
+
+    // Evict worker page index when navigating away
+    function h2EvictPage(pageNum) {
+        if (h2Worker) h2Worker.postMessage({ type: 'EVICT_PAGE', pageNum });
+    }
+
+    function compileDrawingsToBinary(drawings) {
+        const bufferLen = drawings.reduce((acc, item) => {
+            if (item.type === 'Line') return acc + 8; // type, color, thick, x1, y1, x2, y2, padding
+            if (item.type === 'Rect') return acc + 7; // type, color, thick, x, y, w, h
+            if (item.type === 'Polygon' || item.type === 'Arc/Curve') return acc + 4 + item.points.length * 2;
+            return acc;
+        }, 1);
+
+        const buffer = new Float32Array(bufferLen);
+        let offset = 0;
+        
+        for (let i = 0; i < drawings.length; i++) {
+            let item = drawings[i];
+            let typeId = 0;
+            if (item.type === 'Line') typeId = 1;
+            else if (item.type === 'Rect') typeId = 2;
+            else if (item.type === 'Polygon') typeId = 3;
+            else if (item.type === 'Arc/Curve') typeId = 4;
+            else continue;
+
+            buffer[offset++] = typeId;
+            
+            let colorHex = item.color_hex || '#000000';
+            buffer[offset++] = parseInt(colorHex.replace('#', ''), 16);
+            buffer[offset++] = item.thickness || 0.5;
+
+            if (typeId === 1) { // Line
+                buffer[offset++] = item.start[0]; buffer[offset++] = item.start[1];
+                buffer[offset++] = item.end[0]; buffer[offset++] = item.end[1];
+                offset++; // align 8
+            } else if (typeId === 2) { // Rect
+                buffer[offset++] = item.x; buffer[offset++] = item.y;
+                buffer[offset++] = item.width; buffer[offset++] = item.height;
+            } else if (typeId === 3 || typeId === 4) { // Polygon / Arc
+                buffer[offset++] = item.points.length;
+                for (let p = 0; p < item.points.length; p++) {
+                    buffer[offset++] = item.points[p][0];
+                    buffer[offset++] = item.points[p][1];
+                }
+            }
+        }
+        buffer[offset++] = 0; // EOF marker
+        return buffer;
+    }
+
 }

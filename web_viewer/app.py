@@ -25,6 +25,34 @@ import fitz  # PyMuPDF
 import stamp_db
 import doc_renderer
 
+# ── Thread-safe PDF document cache ───────────────────────────────────────────
+# Keeps up to 4 fitz.Document objects open to avoid re-parsing the PDF
+# from disk on every tile request.  Access is protected by a per-entry lock
+# so concurrent tile fetches for the same PDF share one open document safely.
+_PDF_CACHE_LOCK = threading.Lock()
+_PDF_CACHE: dict = {}   # path -> {"doc": fitz.Document, "lock": threading.Lock, "hits": int}
+_PDF_CACHE_MAX = 4
+
+def _get_cached_pdf(path: str) -> tuple:
+    """Return (fitz.Document, per-doc threading.Lock) from cache, opening if needed."""
+    with _PDF_CACHE_LOCK:
+        if path in _PDF_CACHE:
+            _PDF_CACHE[path]["hits"] += 1
+            return _PDF_CACHE[path]["doc"], _PDF_CACHE[path]["lock"]
+        # Evict LRU entry if at capacity
+        if len(_PDF_CACHE) >= _PDF_CACHE_MAX:
+            lru_path = min(_PDF_CACHE, key=lambda k: _PDF_CACHE[k]["hits"])
+            try:
+                _PDF_CACHE[lru_path]["doc"].close()
+            except Exception:
+                pass
+            del _PDF_CACHE[lru_path]
+        doc = fitz.open(path)
+        entry = {"doc": doc, "lock": threading.Lock(), "hits": 1}
+        _PDF_CACHE[path] = entry
+        return entry["doc"], entry["lock"]
+
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "vpi-change-me-in-production-32chars")
 
@@ -498,65 +526,57 @@ def get_page_image(filename, page_num):
         abort(404, description="File not found")
         
     try:
+        # Open the document locally to avoid thread locks, allowing massive concurrent tile generation
         doc = fitz.open(pdf_path)
-        if page_num < 1 or page_num > len(doc):
-            doc.close()
-            abort(404, description="Page not found")
-            
-        page = doc[page_num - 1]
-        
-        # Determine scale and optional clip region from query params
-        scale_param = request.args.get("scale", "2")
-        clip_param = request.args.get("clip")
-        
-        clip_rect = None
-        w, h = page.rect.width, page.rect.height
-        
-        if clip_param:
-            try:
-                cx0, cy0, cw, ch = map(float, clip_param.split(","))
-                # Intersect clip with page rect to be safe
-                clip_rect = fitz.Rect(cx0, cy0, cx0 + cw, cy0 + ch) & page.rect
-                if not clip_rect.is_empty:
-                    w, h = clip_rect.width, clip_rect.height
-                else:
-                    clip_rect = None
-            except Exception:
-                clip_rect = None
-                
         try:
-            scale_val = float(scale_param)
-            scale_val = max(scale_val, 1.0)
-            
-            # Cap limits to ensure the browser can allocate and render the image:
-            # - Max width or height: 16,384 pixels (WebGL/GPU texture limit)
-            # - Max total area: 250,000,000 pixels (Chrome canvas/image limit)
-            MAX_DIMENSION = 16384.0
-            MAX_PIXELS = 250_000_000
-            
-            area = w * h
-            if area > 0:
-                # Limit by max dimension
-                scale_limit_dim = MAX_DIMENSION / max(w, h)
-                # Limit by max area
-                scale_limit_area = math.sqrt(MAX_PIXELS / area)
+            if page_num < 1 or page_num > len(doc):
+                abort(404, description="Page not found")
                 
-                # Combine limits, ensuring max_scale is at least 3.0 (legibility) and at most 48.0
-                max_scale = min(max(min(scale_limit_dim, scale_limit_area), 3.0), 48.0)
-            else:
-                max_scale = 8.0
-                
-            scale_val = min(scale_val, max_scale)
-        except ValueError:
-            scale_val = 2.0
+            page = doc[page_num - 1]
             
-        # Render at requested scale
-        mat = fitz.Matrix(scale_val, scale_val)
-        pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
-        
-        # Convert to bytes
-        img_data = pix.tobytes("jpeg")
-        doc.close()
+            # Determine scale and optional clip region from query params
+            scale_param = request.args.get("scale", "2")
+            clip_param = request.args.get("clip")
+            
+            clip_rect = None
+            w, h = page.rect.width, page.rect.height
+            
+            if clip_param:
+                try:
+                    cx0, cy0, cw, ch = map(float, clip_param.split(","))
+                    # Intersect clip with page rect to be safe
+                    clip_rect = fitz.Rect(cx0, cy0, cx0 + cw, cy0 + ch) & page.rect
+                    if not clip_rect.is_empty:
+                        w, h = clip_rect.width, clip_rect.height
+                    else:
+                        clip_rect = None
+                except Exception:
+                    clip_rect = None
+                    
+            try:
+                scale_val = float(scale_param)
+                scale_val = max(scale_val, 1.0)
+                
+                MAX_DIMENSION = 16384.0
+                MAX_PIXELS = 250_000_000
+                
+                area = w * h
+                if area > 0:
+                    scale_limit_dim = MAX_DIMENSION / max(w, h)
+                    scale_limit_area = math.sqrt(MAX_PIXELS / area)
+                    max_scale = min(max(min(scale_limit_dim, scale_limit_area), 3.0), 48.0)
+                else:
+                    max_scale = 8.0
+                    
+                scale_val = min(scale_val, max_scale)
+            except ValueError:
+                scale_val = 2.0
+                
+            mat = fitz.Matrix(scale_val, scale_val)
+            pix = page.get_pixmap(matrix=mat, clip=clip_rect, alpha=False)
+            img_data = pix.tobytes("jpeg")
+        finally:
+            doc.close()
         
         return send_file(
             io.BytesIO(img_data),
@@ -617,7 +637,7 @@ def get_page_drawings(filename, page_num):
     if not pdf_path or not os.path.exists(pdf_path):
         return jsonify({"error": "File not found"}), 404
     cache_dir = pdf_path + ".cache"
-    cache_file = os.path.join(cache_dir, f"drawings_page_{page_num}.json")
+    cache_file = os.path.join(cache_dir, f"drawings_page_v2_{page_num}.json")
     
     if os.path.exists(cache_file):
         from flask import send_file
@@ -1865,84 +1885,167 @@ def copy_stamp(filename):
         doc = fitz.open(pdf_path)
         src_page_obj = doc[int(src_page) - 1]
         page = doc[int(page_num) - 1]
-        
+
         src_annot = None
         for a in src_page_obj.annots() or []:
             if a.xref == int(src_xref):
                 src_annot = a
                 break
-                
+
         if not src_annot:
             doc.close()
             return jsonify({"error": "Source stamp not found"}), 404
 
-        # Get visual width and height of the source stamp
+        # -- Resolve a shape PDF for this stamp ---------------------------------
+        # Strategy 1: read PatternName / NM from the source xref, strip trailing _N
+        global_stamps_dir = os.path.join(BASE_DIR, "web_viewer", "data", "global_stamps")
+        shape_ap_val = None   # Will hold an AP-dict string if we succeed
+
+        def _get_base_shape_name(xref_int):
+            for key in ("PatternName", "NM"):
+                raw = doc.xref_get_key(xref_int, key)
+                if raw[0] in ("string", "name"):
+                    val = raw[1].strip("()/")
+                    m = re.match(r'^(.*)[_\s\-]([^_\s\-]+)$', val)
+                    return m.group(1) if m else val
+            return None
+
+        def _build_xobj_ap(shape_pdf_path):
+            """Load shape PDF, build an XObject, return an AP-dict string or None."""
+            try:
+                src_shape = fitz.open(shape_pdf_path)
+                doc.insert_pdf(src_shape)
+                src_shape.close()
+                tmp_page = doc[-1]
+
+                # Prefer Stamp annotation AP
+                for ca in tmp_page.annots() or []:
+                    if ca.type[1] == "Stamp":
+                        ap = doc.xref_get_key(ca.xref, "AP")
+                        if ap[0] == "dict":
+                            doc.delete_page(-1)
+                            return ap[1]
+
+                # Fall back: whole-page content → XObject
+                page_xref = tmp_page.xref
+                res_val   = doc.xref_get_key(page_xref, "Resources")
+                tmp_page.clean_contents()
+                cl = tmp_page.get_contents()
+                if cl:
+                    cs   = doc.xref_stream(cl[0])
+                    nxr  = doc.get_new_xref()
+                    bbox = tmp_page.rect
+                    bs   = f"[{bbox.x0} {bbox.y0} {bbox.x1} {bbox.y1}]"
+                    od   = f"<< /Type /XObject /Subtype /Form /BBox {bs} /Matrix [1 0 0 1 0 0] "
+                    if res_val[0] == "dict":
+                        od += f"/Resources {res_val[1]} "
+                    od += ">>"
+                    doc.update_object(nxr, od)
+                    doc.update_stream(nxr, cs)
+                    doc.delete_page(-1)
+                    return f"<< /N {nxr} 0 R >>"
+                doc.delete_page(-1)
+            except Exception as _e:
+                print(f"[copy_stamp] _build_xobj_ap error: {_e}")
+            return None
+
+        base_shape = _get_base_shape_name(int(src_xref))
+        if base_shape:
+            spdf = os.path.join(global_stamps_dir, f"{base_shape}.pdf")
+            if os.path.exists(spdf):
+                shape_ap_val = _build_xobj_ap(spdf)
+
+        # Strategy 2: copy source annotation's AP directly
+        if not shape_ap_val:
+            src_ap = doc.xref_get_key(int(src_xref), "AP")
+            if src_ap[0] == "dict":
+                shape_ap_val = src_ap[1]
+
+        # -- Compute placement rect -------------------------------------------
+        # Use source annotation rect for size
         visual_src_rect = src_annot.rect * src_page_obj.rotation_matrix
         visual_w = visual_src_rect.width
         visual_h = visual_src_rect.height
-        
-        # Create target visual rect centered at center_x, center_y
-        target_visual_rect = fitz.Rect(float(center_x) - visual_w/2, float(center_y) - visual_h/2, 
-                                       float(center_x) + visual_w/2, float(center_y) + visual_h/2)
-        
-        # Map back to target page's unrotated coordinates
-        new_rect = target_visual_rect * ~page.rotation_matrix
-        
-        parts = new_name.rsplit('_', 1)
-        num_text = parts[1] if len(parts) > 1 else "1"
-        
-        fixed_fs = max(min(new_rect.width, new_rect.height) * 0.5, 6.0)
-        label_color = [1.0, 0.0, 0.0] # Red text like detect_patterns_output.py
-        
-        new_annot = page.add_freetext_annot(
-            new_rect,
-            num_text,
-            fontsize=fixed_fs,
-            fontname="helv",
-            text_color=label_color,
-            fill_color=(1.0, 1.0, 1.0),
-            align=fitz.TEXT_ALIGN_CENTER,
+
+        target_visual_rect = fitz.Rect(
+            float(center_x) - visual_w / 2, float(center_y) - visual_h / 2,
+            float(center_x) + visual_w / 2, float(center_y) + visual_h / 2,
         )
-        new_annot.set_border(width=2.0)
+        new_rect = target_visual_rect * ~page.rotation_matrix
+
+        # -- Derive number text from new_name (e.g. "Target_42" → "42") -------
+        parts    = new_name.rsplit('_', 1)
+        num_text = parts[1] if len(parts) > 1 else "1"
+        fixed_fs = max(min(new_rect.width, new_rect.height) * 0.5, 6.0)
+
+        # -- Create freetext annotation ----------------------------------------
+        if shape_ap_val:
+            # transparent background – shape is drawn via AP
+            new_annot = page.add_freetext_annot(
+                new_rect, num_text,
+                fontsize=fixed_fs, fontname="helv",
+                text_color=(1.0, 0.0, 0.0),
+                fill_color=None,
+                align=fitz.TEXT_ALIGN_CENTER,
+            )
+            new_annot.set_border(width=0.0)
+        else:
+            # plain white box with border (original fallback)
+            new_annot = page.add_freetext_annot(
+                new_rect, num_text,
+                fontsize=fixed_fs, fontname="helv",
+                text_color=(1.0, 0.0, 0.0),
+                fill_color=(1.0, 1.0, 1.0),
+                align=fitz.TEXT_ALIGN_CENTER,
+            )
+            new_annot.set_border(width=2.0)
+
         stamp_subject = src_annot.info.get("subject", "system")
         new_annot.set_info(subject=stamp_subject, title="")
         new_annot.set_rotation(page.rotation)
         new_annot.update()
 
+        # -- Hyperlink ---------------------------------------------------------
         import urllib.parse
         encoded_pdf = urllib.parse.quote(pdf_path.replace("\\", "/"))
         base_url = "https://tabsoftwear.salcerandco.com/"
-        link = {
+        page.insert_link({
             "kind": fitz.LINK_URI,
             "from": new_rect,
-            "uri": f"{base_url}?pdf={encoded_pdf}#stamp-{new_uuid}"
-        }
-        page.insert_link(link)
-        
-        doc.xref_set_key(new_annot.xref, "Subtype", "/Stamp")
-        doc.xref_set_key(new_annot.xref, "NM", f"({new_name})")
-        doc.xref_set_key(new_annot.xref, "Name", f"/{new_uuid}")
-        doc.xref_set_key(new_annot.xref, "StampID", f"({new_uuid})")
-        
-        # Determine OCG if possible from source annot link
+            "uri":  f"{base_url}?pdf={encoded_pdf}#stamp-{new_uuid}",
+        })
+
+        # -- Promote to /Stamp and apply AP -----------------------------------
+        doc.xref_set_key(new_annot.xref, "Subtype",  "/Stamp")
+        doc.xref_set_key(new_annot.xref, "NM",       f"({new_name})")
+        doc.xref_set_key(new_annot.xref, "Name",     f"/{new_uuid}")
+        doc.xref_set_key(new_annot.xref, "StampID",  f"({new_uuid})")
+
+        if shape_ap_val:
+            # Strip /AS so the viewer doesn't look for a named state
+            doc.xref_set_key(new_annot.xref, "AS", "null")
+            doc.xref_set_key(new_annot.xref, "AP", shape_ap_val)
+
+        # -- Copy OCG from source link ----------------------------------------
         for lnk in src_page_obj.get_links():
-            if lnk.get("from") and (lnk["from"] & src_annot.rect).get_area() / src_annot.rect.get_area() > 0.8:
-                # Find the xref of this link to get its OCG
+            if lnk.get("from") and \
+               (lnk["from"] & src_annot.rect).get_area() / src_annot.rect.get_area() > 0.8:
                 annots_val = doc.xref_get_key(src_page_obj.xref, "Annots")
                 if annots_val[0] == "array":
-                    # PDF array tokens look like "12 0 R 15 0 R" — only numeric
-                    # tokens are xrefs; skip "0" generation numbers and "R" keywords.
                     parts_arr = annots_val[1].replace("[", "").replace("]", "").split()
                     for axref in parts_arr:
-                        if not axref.isdigit(): continue  # skip "R" and other non-integers
+                        if not axref.isdigit():
+                            continue
                         axref_int = int(axref)
-                        if axref_int == 0: continue
+                        if axref_int == 0:
+                            continue
                         ocg_val = doc.xref_get_key(axref_int, "OC")
                         if ocg_val[0] == "indirect":
                             doc.xref_set_key(new_annot.xref, "OC", f"{ocg_val[1]} 0 R")
                             break
                 break
 
+        # -- Save -------------------------------------------------------------
         try:
             doc.saveIncr()
             doc.close()
@@ -1951,14 +2054,14 @@ def copy_stamp(filename):
             doc.save(tmp_path, deflate=True)
             doc.close()
             os.replace(tmp_path, pdf_path)
-            
+
         return jsonify({
-            "success": True, 
+            "success": True,
             "stamp": {
                 "xref": new_annot.xref,
                 "name": new_name,
-                "uuid": new_uuid
-            }
+                "uuid": new_uuid,
+            },
         })
     except Exception as e:
         import traceback
@@ -2915,9 +3018,11 @@ def manage_tags_upload():
                 try:
                     file.save(temp_path)
                     doc = fitz.open(temp_path)
+                    found_stamp_annot = False
                     for page in doc:
                         for annot in page.annots() or []:
                             if annot.type[1] == "Stamp":
+                                found_stamp_annot = True
                                 # Try to get a meaningful name
                                 name = annot.info.get("title") or annot.info.get("subject") or annot.info.get("name")
                                 if name:
@@ -2925,7 +3030,13 @@ def manage_tags_upload():
                                     if safe_name:
                                         stamp_names.append(safe_name)
                                         try:
-                                            pix = page.get_pixmap(clip=annot.rect, matrix=fitz.Matrix(2, 2))
+                                            # Validate rect has positive area before clipping
+                                            rect = annot.rect
+                                            if rect.width > 1 and rect.height > 1:
+                                                pix = page.get_pixmap(clip=rect, matrix=fitz.Matrix(2, 2))
+                                            else:
+                                                # Degenerate rect — render whole page instead
+                                                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
                                             img_filename = f"{safe_name}.png"
                                             pix.save(os.path.join(upload_dir, img_filename))
                                             # Also save the PDF so we can copy its vectors later!
@@ -2933,6 +3044,30 @@ def manage_tags_upload():
                                             shutil.copy2(temp_path, os.path.join(upload_dir, f"{safe_name}.pdf"))
                                         except Exception as e:
                                             print(f"Error rendering stamp image {safe_name}: {e}")
+                                            # Last-resort: render full page without clip
+                                            try:
+                                                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                                                pix.save(os.path.join(upload_dir, f"{safe_name}.png"))
+                                                import shutil
+                                                shutil.copy2(temp_path, os.path.join(upload_dir, f"{safe_name}.pdf"))
+                                            except Exception as e2:
+                                                print(f"Last-resort render also failed for {safe_name}: {e2}")
+
+                    # Second pass: if no Stamp annotations found, treat the whole PDF as a shape
+                    # (e.g. "air outlet" PDFs that contain only vector paths, no Stamp annotation)
+                    if not found_stamp_annot and len(doc) > 0:
+                        raw_name = os.path.splitext(file.filename)[0]
+                        safe_name = "".join([c for c in raw_name if c.isalpha() or c.isdigit() or c==' ']).rstrip()
+                        if safe_name:
+                            stamp_names.append(safe_name)
+                            try:
+                                page = doc[0]
+                                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                                pix.save(os.path.join(upload_dir, f"{safe_name}.png"))
+                                import shutil
+                                shutil.copy2(temp_path, os.path.join(upload_dir, f"{safe_name}.pdf"))
+                            except Exception as e:
+                                print(f"Error rendering whole-page stamp image {safe_name}: {e}")
                     doc.close()
                 finally:
                     if os.path.exists(temp_path):
@@ -3103,7 +3238,6 @@ def manage_tags_apply_rules():
             if rule_type == "shape" and rule_result:
                 current_num = fields.get("#", "")
                 if not current_num:
-                    import re
                     m = re.search(r'^(.*)[_\s\-]([^_\s\-]+)$', pattern_name)
                     if m:
                         current_num = m.group(2)
@@ -3133,111 +3267,20 @@ def manage_tags_apply_rules():
     try:
         changed = stamp_db.apply_rule_updates(project_name, updates)
         print(f"--- Rule application complete. {changed} stamp updates persisted. ---")
-        
-        # Now apply the shape updates directly to the underlying PDF files so the UI actually sees the new shapes.
-        import fitz
-        from collections import defaultdict
-        pdf_shape_updates = defaultdict(list)
-        for upd in updates:
-            if "pattern_name" in upd and upd.get("pdf_path") and upd.get("xref") and upd.get("page"):
-                pdf_shape_updates[upd["pdf_path"]].append(upd)
-                
-        for pdf_path, shape_upds in pdf_shape_updates.items():
-            if not os.path.exists(pdf_path):
-                print(f"Skipping PDF update: {pdf_path} not found.")
-                continue
-            try:
-                doc = fitz.open(pdf_path)
-                pdf_changed = False
-                # Group by page to avoid loading pages multiple times unnecessarily
-                page_upds = defaultdict(list)
-                for u in shape_upds:
-                    page_upds[u["page"]].append(u)
-                    
-                for page_num, upds_for_page in page_upds.items():
-                    p = doc.load_page(page_num - 1)
-                    for annot in p.annots() or []:
-                        for u in upds_for_page:
-                            if annot.xref == int(u["xref"]):
-                                doc.xref_set_key(annot.xref, "PatternName", f"({u['pattern_name']})")
-                                pdf_changed = True
-                                
-                                # Try to apply the vector drawing from the uploaded shape PDF!
-                                # Extract base shape name (e.g. Triangle from Triangle_123)
-                                base_shape = u["pattern_name"]
-                                import re
-                                m = re.search(r'^(.*)[_\s\-]([^_\s\-]+)$', base_shape)
-                                if m:
-                                    base_shape = m.group(1)
-                                
-                                shape_pdf_path = os.path.join(BASE_DIR, "web_viewer", "data", "global_stamps", f"{base_shape}.pdf")
-                                if os.path.exists(shape_pdf_path):
-                                    try:
-                                        src_shape = fitz.open(shape_pdf_path)
-                                        doc.insert_pdf(src_shape)
-                                        src_shape.close()
-                                        
-                                        temp_page = doc[-1]
-                                        ap_val = None
-                                        
-                                        # First try: does it have a Stamp annotation?
-                                        for copied_annot in temp_page.annots() or []:
-                                            if copied_annot.type[1] == "Stamp":
-                                                ap_dict = doc.xref_get_key(copied_annot.xref, "AP")
-                                                if ap_dict[0] == "dict":
-                                                    ap_val = ap_dict[1]
-                                                    break
-                                                    
-                                        # Second try: use the entire page's contents!
-                                        if not ap_val:
-                                            page_xref = temp_page.xref
-                                            res_val = doc.xref_get_key(page_xref, "Resources")
-                                            temp_page.clean_contents()
-                                            contents_list = temp_page.get_contents()
-                                            if contents_list:
-                                                contents_xref = contents_list[0]
-                                                contents_stream = doc.xref_stream(contents_xref)
-                                                new_xobj_xref = doc.get_new_xref()
-                                                bbox = temp_page.rect
-                                                bbox_str = f"[{bbox.x0} {bbox.y0} {bbox.x1} {bbox.y1}]"
-                                                
-                                                xobj_dict = f"<< /Type /XObject /Subtype /Form /BBox {bbox_str} /Matrix [1 0 0 1 0 0] "
-                                                if res_val[0] == "dict":
-                                                    xobj_dict += f"/Resources {res_val[1]} "
-                                                xobj_dict += ">>"
-                                                
-                                                doc.update_object(new_xobj_xref, xobj_dict)
-                                                doc.update_stream(new_xobj_xref, contents_stream)
-                                                
-                                                ap_val = f"<< /N {new_xobj_xref} 0 R >>"
-                                                
-                                        if ap_val:
-                                            # Strip the /AS key from target annot so it doesn't look for a state
-                                            doc.xref_set_key(annot.xref, "AS", "null")
-                                            doc.xref_set_key(annot.xref, "AP", ap_val)
-                                            add_log(f"Successfully applied vector shape '{base_shape}' to stamp {u['stamp_id']}")
-                                        else:
-                                            add_log(f"Shape '{base_shape}' had no vectors to apply.")
-                                            
-                                        # Delete the temporary page
-                                        doc.delete_page(-1)
-                                    except Exception as e:
-                                        add_log(f"Error copying vectors for shape '{base_shape}': {e}")
-                                        
-                if pdf_changed:
-                    add_log(f"Saving shape updates to PDF: {pdf_path}")
-                    try:
-                        doc.saveIncr()
-                    except Exception:
-                        # Fallback to saving to a temp file and replacing if incremental save fails
-                        tmp_path = pdf_path + ".tmp"
-                        doc.save(tmp_path, deflate=True)
-                        os.replace(tmp_path, pdf_path)
-                doc.close()
-            except Exception as e:
-                add_log(f"Failed to update shapes in PDF {pdf_path}: {e}")
 
-        return jsonify({"success": True, "updated": changed, "stamps_evaluated": len(stamps), "logs": logs})
+        # Apply vector shapes to PDFs in a background thread.
+        # Logic lives in apply_stamp_shapes.py for easy reference.
+        from apply_stamp_shapes import apply_shapes_background
+        _stamps_dir = os.path.join(BASE_DIR, "web_viewer", "data", "global_stamps")
+        apply_shapes_background(updates, _stamps_dir)
+
+        # Return immediately — PDF writes happen in the background thread
+        return jsonify({
+            "success": True,
+            "updated": changed,
+            "stamps_evaluated": len(stamps),
+            "logs": logs[:200],
+        })
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -3245,4 +3288,6 @@ def manage_tags_apply_rules():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5000, threaded=True)
+
+

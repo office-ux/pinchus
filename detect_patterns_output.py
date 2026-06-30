@@ -1,5 +1,6 @@
 import os
 import fitz
+import json
 from collections import defaultdict
 import detect_matching_lines as matching_lines
 import detect_subject_items as subject_items
@@ -299,7 +300,7 @@ def save_pattern_pdf(pdf_path, detected_patterns, cfg, output_path=None, overwri
     for page_num in sorted(patterns_by_page.keys()):
         page = doc[page_num - 1]
 
-        # Skip drawing individual lines, only create the stamp annotations below
+        # Skip drawing individual lines/rects, only create the stamp annotations below
 
         # Add one Stamp annotation per pattern
         for i, pattern in patterns_by_page[page_num]:

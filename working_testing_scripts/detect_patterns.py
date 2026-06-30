@@ -26,6 +26,8 @@ def get_unique_signatures(subject_matches):
     """
     Extract unique geometric signatures for each subject.
     A signature is a list of segments relative to the first segment's start point.
+    To ensure robustness against exploded lines, the signature is forced into a simple
+    4-line bounding box representing the perimeter of the stamp.
     """
     signatures = []
     seen_keys = set()
@@ -36,47 +38,50 @@ def get_unique_signatures(subject_matches):
         if not segments:
             continue
 
-        base_x, base_y = segments[0]["start"]
-        
+        xs = []
+        ys = []
+        for s in segments:
+            xs.extend([s["start"][0], s["end"][0]])
+            ys.extend([s["start"][1], s["end"][1]])
+            
+        if not xs:
+            continue
+            
+        w = abs(max(xs) - min(xs))
+        h = abs(max(ys) - min(ys))
+
         annot_rect = item.get("rect")
         if annot_rect is not None:
             try:
-                # Convert to plain floats (fitz.Rect may not survive multiprocessing pickle)
                 annot_w = float(annot_rect[2]) - float(annot_rect[0])
                 annot_h = float(annot_rect[3]) - float(annot_rect[1])
                 annot_w = abs(annot_w)
                 annot_h = abs(annot_h)
             except Exception:
-                annot_w = annot_h = 0.0
+                annot_w = w
+                annot_h = h
         else:
-            annot_w = annot_h = 0.0
+            annot_w = w
+            annot_h = h
+            
+        effective_weights = [s.get("effective_line_weight", s.get("line_weight", 1.0)) for s in segments]
+        match_weight = sum(effective_weights) / len(effective_weights) if effective_weights else 1.0
+        stroke_color = segments[0].get("stroke_color", (0,0,0))
         
-        rel_segments = []
-        for seg in segments:
-            rel_segments.append({
-                "start_rel": (seg["start"][0] - base_x, seg["start"][1] - base_y),
-                "end_rel": (seg["end"][0] - base_x, seg["end"][1] - base_y),
-                "length": seg["length"],
-                "line_weight": seg.get("effective_line_weight", seg["line_weight"]),
-                "stroke_color": seg["stroke_color"]
-            })
+        rect_segments = [
+            {"start_rel": (0, 0), "end_rel": (w, 0), "length": w, "line_weight": match_weight, "stroke_color": stroke_color, "shape_type": "line"},
+            {"start_rel": (w, 0), "end_rel": (w, h), "length": h, "line_weight": match_weight, "stroke_color": stroke_color, "shape_type": "line"},
+            {"start_rel": (w, h), "end_rel": (0, h), "length": w, "line_weight": match_weight, "stroke_color": stroke_color, "shape_type": "line"},
+            {"start_rel": (0, h), "end_rel": (0, 0), "length": h, "line_weight": match_weight, "stroke_color": stroke_color, "shape_type": "line"},
+        ]
         
-        sig_key_parts = []
-        for s in rel_segments:
-            sig_key_parts.append((
-                round(s["start_rel"][0], 2), round(s["start_rel"][1], 2),
-                round(s["end_rel"][0], 2), round(s["end_rel"][1], 2),
-                round(s["length"], 2),
-                round(s["line_weight"], 2),
-                tuple(round(c, 3) for c in (s["stroke_color"] or []))
-            ))
-        sig_key = (target, tuple(sorted(sig_key_parts)))
+        sig_key = f"{target}|rect_{w:.1f}x{h:.1f}"
 
         if sig_key not in seen_keys:
             seen_keys.add(sig_key)
             for angle in [0, 90, 180, 270]:
                 temp_segs = []
-                for s in rel_segments:
+                for s in rect_segments:
                     temp_segs.append({
                         "start_rel": rotate_rel_point(s["start_rel"], angle),
                         "end_rel": rotate_rel_point(s["end_rel"], angle),
@@ -90,23 +95,16 @@ def get_unique_signatures(subject_matches):
                     s["start_rel"] = (s["start_rel"][0] - rx, s["start_rel"][1] - ry)
                     s["end_rel"] = (s["end_rel"][0] - rx, s["end_rel"][1] - ry)
                 
-                xs = [s["start_rel"][0] for s in temp_segs] + [s["end_rel"][0] for s in temp_segs]
-                ys = [s["start_rel"][1] for s in temp_segs] + [s["end_rel"][1] for s in temp_segs]
-                
-                # Calculate the effective match weight (average of segment weights)
-                seg_weights = [s["line_weight"] for s in temp_segs]
-                match_weight = sum(seg_weights) / len(seg_weights) if seg_weights else 0.0
-
                 signatures.append({
                     "target": target,
                     "segments": temp_segs,
-                    "width": max(xs) - min(xs),
-                    "height": max(ys) - min(ys),
+                    "width": w if angle in [0, 180] else h,
+                    "height": h if angle in [0, 180] else w,
                     "annot_width": annot_w if angle in [0, 180] else annot_h,
                     "annot_height": annot_h if angle in [0, 180] else annot_w,
                     "angle": angle,
                     "match_line_weight": match_weight,
-                    "stroke_color": temp_segs[0]["stroke_color"]
+                    "stroke_color": stroke_color
                 })
             
     return signatures

@@ -51,7 +51,7 @@ function initApp() {
     let pagesData = new Map(); // pageNum -> { bounds, drawings }
     let canvasRenderers = new Map();
     window.canvasRenderers = canvasRenderers;
-    const currentRendererSetting = localStorage.getItem('pdf_renderer') || 'legacy';
+    const currentRendererSetting = localStorage.getItem('pdf_renderer') || 'canvas';
     const imageCache = new Map(); // cacheKey -> image data url / cached url
     let renderId = 0;
     
@@ -1361,7 +1361,7 @@ function initApp() {
                 }
             } // end if (showVectors)
             
-            // Render clickable hyperlink zones on SVG overlay
+            // Render clickable hyperlink zones on SVG overlay FIRST so they sit behind stamps
             if (data.links && data.links.length > 0) {
                 data.links.forEach(link => {
                     const linkEl = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -1399,7 +1399,7 @@ function initApp() {
                     svg.appendChild(linkEl);
                 });
             }
-            
+
             overlayPatternRects(pageNum, svg);
             overlayStampRects(pageNum, svg);
             return { bounds: data.page_bounds };

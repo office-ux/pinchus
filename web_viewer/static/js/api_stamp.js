@@ -812,24 +812,56 @@ function initStampAPI() {
         modal.style.display = "flex";
         
         try {
+            if (window._cachedProjectName !== project) {
+                window._cachedGroupRes = null;
+                window._cachedProjectData = null;
+                window._cachedProjectName = project;
+            }
+
+            // Fetch missing cached data and stamp meta concurrently
+            const reqs = [];
+            reqs.push(stampAPI.getStampMeta(project, currentStamp.pdf_path, currentStamp.page, currentStamp.xref));
+            
+            if (!window._cachedGroupRes) {
+                if (project) {
+                    reqs.push(stampAPI.getGroups(project).then(res => { window._cachedGroupRes = res; }).catch(err => { console.warn(err); window._cachedGroupRes = {}; }));
+                } else {
+                    reqs.push(stampAPI.getGroups("").then(res => { window._cachedGroupRes = res; }).catch(err => { console.warn(err); window._cachedGroupRes = {}; }));
+                }
+            }
+            if (!window._cachedProjectData) {
+                if (project) {
+                    reqs.push(fetch(`/api/projects/${encodeURIComponent(project)}/data`)
+                        .then(res => res.ok ? res.json() : {})
+                        .then(data => { window._cachedProjectData = data; })
+                        .catch(err => { console.warn(err); window._cachedProjectData = {}; })
+                    );
+                } else {
+                    window._cachedProjectData = {};
+                }
+            }
+
+            const results = await Promise.all(reqs);
+            const metaRes = results[0];
+            const groupRes = window._cachedGroupRes;
+            const dataJson = window._cachedProjectData;
+
             // Load groups
-            const groupRes = await stampAPI.getGroups(project);
             groupSelect.innerHTML = '<option value="">-- No System --</option>';
-            groupRes.groups.forEach(g => {
-                const opt = document.createElement("option");
-                opt.value = g.id;
-                opt.textContent = g.name;
-                opt.style.color = g.color; // visual hint
-                groupSelect.appendChild(opt);
-            });
+            if (groupRes && groupRes.groups) {
+                groupRes.groups.forEach(g => {
+                    const opt = document.createElement("option");
+                    opt.value = g.id;
+                    opt.textContent = g.name;
+                    opt.style.color = g.color; // visual hint
+                    groupSelect.appendChild(opt);
+                });
+            }
             
             // Load unique system pattern names for the Air Outlet dropdown
-            const dataRes = await fetch(`/api/projects/${encodeURIComponent(project)}/data`);
-            if (dataRes.ok) {
-                const data = await dataRes.json();
-                const systems = data.systems || [];
+            if (dataJson && dataJson.systems) {
                 const uniquePatterns = new Set();
-                systems.forEach(s => {
+                dataJson.systems.forEach(s => {
                     let pat = s.pattern_name || s.name || "";
                     if (pat) {
                         const match = pat.match(/^(.*)[_\s\-]([^_\s\-]+)$/);
@@ -850,8 +882,6 @@ function initStampAPI() {
                 }
             }
 
-            // Load stamp meta for the first stamp
-            const metaRes = await stampAPI.getStampMeta(project, currentStamp.pdf_path, currentStamp.page, currentStamp.xref);
             const meta = metaRes.metadata;
             
             if (isMulti) {
@@ -1236,36 +1266,81 @@ function initStampAPI() {
 
             // 2. Perform API calls in the background without blocking the UI
             (async () => {
-                try {
-                    for (const up of updatesToPush) {
-                        await stampAPI.updateStampMeta(up.proj, up.pdf_path, up.page, up.xref, up.fields, up.groupId, up.stampType, up.finalPatternName);
-                    }
-                    
-                    // Apply tag rules to update stamp shapes/colors based on saved changes
-                    const projectForRules = window.currentProject || document.getElementById("current-project-label")?.textContent || "";
-                    if (projectForRules) {
-                        try {
-                            await fetch('/api/manage_tags/apply_rules', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ project: projectForRules })
-                            });
-                        } catch (rulesErr) {
-                            console.warn('apply_rules after stamp save failed:', rulesErr);
-                        }
-                    }
-                    
-                    // Trigger visual update if needed to fetch updated colors/shapes from apply_rules
-                    if (window.refreshStampVisuals) window.refreshStampVisuals();
+                const statusEl = document.getElementById("project-data-update-status");
+                if (statusEl) {
+                    statusEl.textContent = "Updating...";
+                    statusEl.style.color = "var(--primary)";
+                    statusEl.style.display = "block";
+                }
 
-                    // Refresh data viewer if it is active (after API update)
+                try {
+                    if (window.appendScannerLog) {
+                        window.appendScannerLog(`> Beginning parallel background save for ${updatesToPush.length} stamp(s)...`);
+                    }
+                    await Promise.all(updatesToPush.map(up => {
+                        if (window.appendScannerLog) {
+                            window.appendScannerLog(`> Sending update for stamp ${up.xref} to server...`);
+                        }
+                        return stampAPI.updateStampMeta(up.proj, up.pdf_path, up.page, up.xref, up.fields, up.groupId, up.stampType, up.finalPatternName).then(() => {
+                            if (window.appendScannerLog) {
+                                window.appendScannerLog(`> ✓ Stamp ${up.xref} fields saved.`);
+                            }
+                        });
+                    }));
+                    
+                    // Server has finished updating the actual stamp fields! Update UI immediately.
+                    if (statusEl) {
+                        statusEl.textContent = "Finished updating";
+                        statusEl.style.color = "var(--success)";
+                        setTimeout(() => {
+                            statusEl.style.display = "none";
+                        }, 3000);
+                    }
+
+                    // Refresh data viewer if it is active
                     const dataViewer = document.getElementById("data-viewer-container");
                     if (dataViewer && dataViewer.style.display !== "none") {
-                        const btnViewData = document.getElementById("btn-view-project-data");
-                        if (btnViewData) btnViewData.click();
+                        for (const up of updatesToPush) {
+                            const stampObj = {};
+                            for (const f of up.fields) {
+                                if (f.name) stampObj[f.name] = f.value;
+                            }
+                            if (typeof allProjectAirOutlets !== 'undefined') {
+                                const ao = allProjectAirOutlets.find(item => item.xref === up.xref);
+                                if (ao) ao.fields = stampObj;
+                            }
+                            if (typeof allProjectSystems !== 'undefined') {
+                                const sys = allProjectSystems.find(item => item.xref === up.xref);
+                                if (sys) sys.fields = stampObj;
+                            }
+                        }
+                        if (typeof filterAndRenderProjectData === 'function') {
+                            filterAndRenderProjectData();
+                        }
+                    }
+
+                    // Apply tag rules to update stamp shapes/colors based on saved changes IN BACKGROUND
+                    const projectForRules = window.currentProject || document.getElementById("current-project-label")?.textContent || "";
+                    if (projectForRules) {
+                        fetch('/api/manage_tags/apply_rules', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ project: projectForRules })
+                        }).then(() => {
+                            if (window.refreshStampVisuals) window.refreshStampVisuals();
+                        }).catch(rulesErr => {
+                            console.warn('apply_rules after stamp save failed:', rulesErr);
+                        });
                     }
                 } catch (apiErr) {
                     console.error("Background save failed:", apiErr);
+                    if (statusEl) {
+                        statusEl.textContent = "Error updating";
+                        statusEl.style.color = "red";
+                        setTimeout(() => {
+                            statusEl.style.display = "none";
+                        }, 3000);
+                    }
                 }
             })();
 
@@ -1324,8 +1399,17 @@ function initStampAPI() {
                 // Refresh data viewer if it is active
                 const dataViewer = document.getElementById("data-viewer-container");
                 if (dataViewer && dataViewer.style.display !== "none") {
-                    const btnViewData = document.getElementById("btn-view-project-data");
-                    if (btnViewData) btnViewData.click();
+                    for (const stamp of stamps) {
+                        if (typeof allProjectAirOutlets !== 'undefined') {
+                            allProjectAirOutlets = allProjectAirOutlets.filter(item => item.xref !== stamp.xref);
+                        }
+                        if (typeof allProjectSystems !== 'undefined') {
+                            allProjectSystems = allProjectSystems.filter(item => item.xref !== stamp.xref);
+                        }
+                    }
+                    if (typeof filterAndRenderProjectData === 'function') {
+                        filterAndRenderProjectData();
+                    }
                 }
             }
         });
@@ -2970,16 +3054,18 @@ function initStampAPI() {
         }
     }
 
-    async function loadProjectData(project) {
+    async function loadProjectData(project, silent = false) {
         const airOutletsContainer = document.getElementById("air-outlets-tables-container");
         const tableSystems = document.getElementById("table-systems");
         
-        if (airOutletsContainer) {
-            airOutletsContainer.innerHTML = "<div style='padding: 20px; text-align: center; color: var(--text-secondary);'>Loading...</div>";
-        }
-        if (tableSystems) {
-            tableSystems.querySelector("thead").innerHTML = "";
-            tableSystems.querySelector("tbody").innerHTML = "<tr><td>Loading...</td></tr>";
+        if (!silent) {
+            if (airOutletsContainer) {
+                airOutletsContainer.innerHTML = "<div style='padding: 20px; text-align: center; color: var(--text-secondary);'>Loading...</div>";
+            }
+            if (tableSystems) {
+                tableSystems.querySelector("thead").innerHTML = "";
+                tableSystems.querySelector("tbody").innerHTML = "<tr><td>Loading...</td></tr>";
+            }
         }
 
         const sInput = document.getElementById("search-project-data");
@@ -2987,8 +3073,8 @@ function initStampAPI() {
 
         try {
             const [res, configRes] = await Promise.all([
-                fetch(`/api/projects/${encodeURIComponent(project)}/data`),
-                fetch(`/api/config/data_viewer`)
+                fetch(`/api/projects/${encodeURIComponent(project)}/data?t=${Date.now()}`, { cache: 'no-store' }),
+                fetch(`/api/config/data_viewer?t=${Date.now()}`, { cache: 'no-store' })
             ]);
             
             if (!res.ok) throw new Error("Failed to fetch project data");
@@ -3019,6 +3105,7 @@ function initStampAPI() {
     // --- MULTI SELECTION GLOBALS ---
     const selectedRows = new Set();
     let lastSelectedRowIndex = -1;
+    let isMultiSelectMode = false;
     let currentSortColumn = null;
     let currentSortDir = 1; // 1 for asc, -1 for desc
     
@@ -3033,8 +3120,18 @@ function initStampAPI() {
             if (e.target.closest("button, input, a, .col-resizer, th, select, span.close, span.close-btn") || (e.target.tagName === 'SPAN' && e.target.textContent === '⋮')) return;
             
             if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
-                selectedRows.clear();
-                document.querySelectorAll(".data-table tr.selected").forEach(r => r.classList.remove("selected"));
+                const clickedRow = e.target.closest("tr[data-id]");
+                if (isMultiSelectMode) {
+                    if (!clickedRow) {
+                        // Clicked away from rows, exit multi-select mode
+                        isMultiSelectMode = false;
+                        selectedRows.clear();
+                        document.querySelectorAll(".data-table tr.selected").forEach(r => r.classList.remove("selected"));
+                    }
+                } else {
+                    selectedRows.clear();
+                    document.querySelectorAll(".data-table tr.selected").forEach(r => r.classList.remove("selected"));
+                }
             }
             
             isSelecting = true;
@@ -3485,8 +3582,82 @@ function initStampAPI() {
             const strId = String(item.id);
             if (selectedRows.has(strId)) tr.classList.add("selected");
             
+            let pressTimer = null;
+            let didLongPress = false;
+            let startX = 0, startY = 0;
+
+            const startPress = (e) => {
+                if (e.button !== undefined && e.button !== 0) return;
+                if (e.target.tagName === 'SPAN' && e.target.textContent === '⋮') return;
+                
+                didLongPress = false;
+                if (e.touches && e.touches[0]) {
+                    startX = e.touches[0].clientX;
+                    startY = e.touches[0].clientY;
+                } else {
+                    startX = e.clientX;
+                    startY = e.clientY;
+                }
+
+                pressTimer = setTimeout(() => {
+                    didLongPress = true;
+                    if (isMultiSelectMode) {
+                        // Deactivate
+                        isMultiSelectMode = false;
+                        selectedRows.clear();
+                        document.querySelectorAll(".data-table tr.selected").forEach(r => r.classList.remove("selected"));
+                    } else {
+                        // Activate
+                        isMultiSelectMode = true;
+                        if (!selectedRows.has(strId)) {
+                            selectedRows.add(strId);
+                            tr.classList.add("selected");
+                            lastSelectedRowIndex = rowIndex;
+                        }
+                    }
+                    if (navigator.vibrate) navigator.vibrate(50);
+                }, 500);
+            };
+
+            const cancelPress = () => {
+                if (pressTimer) {
+                    clearTimeout(pressTimer);
+                    pressTimer = null;
+                }
+            };
+            
+            const checkMove = (e) => {
+                if (!pressTimer) return;
+                let clientX = e.clientX;
+                let clientY = e.clientY;
+                if (e.touches && e.touches[0]) {
+                    clientX = e.touches[0].clientX;
+                    clientY = e.touches[0].clientY;
+                }
+                if (Math.abs(clientX - startX) > 10 || Math.abs(clientY - startY) > 10) {
+                    cancelPress();
+                }
+            };
+
+            tr.addEventListener("mousedown", startPress);
+            tr.addEventListener("touchstart", startPress, {passive: true});
+            tr.addEventListener("mouseup", cancelPress);
+            tr.addEventListener("mouseleave", cancelPress);
+            tr.addEventListener("touchend", cancelPress);
+            tr.addEventListener("touchcancel", cancelPress);
+            tr.addEventListener("mousemove", checkMove);
+            tr.addEventListener("touchmove", checkMove, {passive: true});
+            
+            tr.addEventListener("contextmenu", (e) => {
+                if (didLongPress) e.preventDefault();
+            });
+
             tr.addEventListener("click", (e) => {
                 if (e.target.tagName === 'SPAN' && e.target.textContent === '⋮') return;
+                if (didLongPress) {
+                    didLongPress = false;
+                    return;
+                }
                 
                 const allRows = Array.from(tbody.querySelectorAll("tr"));
                 if (e.shiftKey && lastSelectedRowIndex !== -1) {
@@ -3494,7 +3665,7 @@ function initStampAPI() {
                     const end = Math.max(lastSelectedRowIndex, rowIndex);
                     document.getSelection().removeAllRanges();
                     
-                    if (!e.ctrlKey && !e.metaKey) {
+                    if (!e.ctrlKey && !e.metaKey && !isMultiSelectMode) {
                         selectedRows.clear();
                         tbody.querySelectorAll("tr.selected").forEach(r => r.classList.remove("selected"));
                     }
@@ -3507,7 +3678,7 @@ function initStampAPI() {
                             row.classList.add("selected");
                         }
                     }
-                } else if (e.ctrlKey || e.metaKey) {
+                } else if (e.ctrlKey || e.metaKey || isMultiSelectMode) {
                     if (selectedRows.has(strId)) {
                         selectedRows.delete(strId);
                         tr.classList.remove("selected");
@@ -3766,6 +3937,24 @@ document.addEventListener('DOMContentLoaded', () => {
         ghost.style.zIndex = '99999';
         ghost.style.transform = 'translate(-50%, -50%)';
         ghost.style.display = 'none';
+
+        let ripple = document.createElement('div');
+        ripple.style.position = 'absolute';
+        ripple.style.top = '50%';
+        ripple.style.left = '50%';
+        ripple.style.width = '100px';
+        ripple.style.height = '100px';
+        ripple.style.marginTop = '-50px';
+        ripple.style.marginLeft = '-50px';
+        ripple.style.borderRadius = '50%';
+        ripple.style.border = '6px solid rgba(0, 150, 255, 0.8)';
+        ripple.style.backgroundColor = 'rgba(0, 150, 255, 0.2)';
+        ripple.style.pointerEvents = 'none';
+        ripple.style.opacity = '0';
+        ripple.style.transform = 'scale(0)';
+        ripple.style.transformOrigin = 'center center';
+        ghost.appendChild(ripple);
+
         document.body.appendChild(ghost);
 
         let currentPdfX = null;
@@ -3773,25 +3962,25 @@ document.addEventListener('DOMContentLoaded', () => {
         let currentPageNum = null;
         let isActive = true;
 
-        const onMouseMove = (e) => {
+        const handleMove = (clientX, clientY) => {
             if (!isActive) return;
             
             ghost.style.display = 'block';
 
             // Find underlying page wrapper
-            const hitTarget = document.elementFromPoint(e.clientX, e.clientY);
+            const hitTarget = document.elementFromPoint(clientX, clientY);
             const wrapper = hitTarget ? hitTarget.closest('.page-wrapper') : null;
             
-            let snappedX = e.clientX;
-            let snappedY = e.clientY;
+            let snappedX = clientX;
+            let snappedY = clientY;
 
             if (wrapper) {
                 currentPageNum = parseInt(wrapper.dataset.page);
                 const rect = wrapper.getBoundingClientRect();
                 const scale = rect.width / wrapper.offsetWidth;
                 
-                let pdfX = (e.clientX - rect.left) / scale;
-                let pdfY = (e.clientY - rect.top) / scale;
+                let pdfX = (clientX - rect.left) / scale;
+                let pdfY = (clientY - rect.top) / scale;
 
                 // Attempt to snap to vector line
                 if (window.canvasRenderers) {
@@ -3818,11 +4007,9 @@ document.addEventListener('DOMContentLoaded', () => {
             ghost.style.top = snappedY + 'px';
         };
 
-        const onClick = async (e) => {
-            if (!isActive) return;
-            e.preventDefault();
-            e.stopPropagation();
+        const onMouseMove = (e) => handleMove(e.clientX, e.clientY);
 
+        const executePlacement = async () => {
             if (currentPdfX === null || currentPdfY === null || currentPageNum === null) {
                 cleanup();
                 return;
@@ -3832,6 +4019,10 @@ document.addEventListener('DOMContentLoaded', () => {
             isActive = false;
             ghost.style.backgroundColor = 'rgba(0, 255, 0, 0.4)';
             ghost.style.border = '2px solid #00ff00';
+            ghost.style.transition = 'opacity 0.3s ease';
+            setTimeout(() => {
+                if (ghost) ghost.style.opacity = '0';
+            }, 300);
 
             try {
                 const res = await fetch(`/api/pdf/${encodeURIComponent(window.currentPdf)}/stamps/copy`, {
@@ -3864,6 +4055,93 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
+        let isTouchMode = false;
+
+        const onClick = async (e) => {
+            if (!isActive || isTouchMode) return;
+            e.preventDefault();
+            e.stopPropagation();
+            await executePlacement();
+        };
+
+        let touchTimer = null;
+        let lastTouchX = null;
+        let lastTouchY = null;
+        let lastTapTime = 0;
+        let lastTapX = 0;
+        let lastTapY = 0;
+
+        const onTouchStart = (e) => {
+            if (!isActive || e.touches.length !== 1) return;
+            isTouchMode = true;
+            const touch = e.touches[0];
+            lastTouchX = touch.clientX;
+            lastTouchY = touch.clientY;
+
+            handleMove(touch.clientX, touch.clientY);
+
+            const now = Date.now();
+            const dx = touch.clientX - lastTapX;
+            const dy = touch.clientY - lastTapY;
+            const distSq = dx * dx + dy * dy;
+
+            if (now - lastTapTime < 600 && distSq < 2025) { 
+                executePlacement();
+                return;
+            }
+
+            lastTapTime = now;
+            lastTapX = touch.clientX;
+            lastTapY = touch.clientY;
+
+            ripple.style.transition = 'none';
+            ripple.style.transform = 'scale(0.2)';
+            ripple.style.opacity = '0.8';
+
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    ripple.style.transition = 'transform 0.6s ease-out, opacity 0.6s ease-out';
+                    ripple.style.transform = 'scale(3)';
+                    ripple.style.opacity = '0';
+                });
+            });
+
+            touchTimer = setTimeout(() => {
+                if (isActive) executePlacement();
+            }, 600);
+        };
+
+        const onTouchMove = (e) => {
+            if (!isActive || e.touches.length !== 1) return;
+            const touch = e.touches[0];
+            
+            if (touchTimer) {
+                const dx = touch.clientX - lastTouchX;
+                const dy = touch.clientY - lastTouchY;
+                if (dx * dx + dy * dy > 100) { 
+                    clearTimeout(touchTimer);
+                    touchTimer = null;
+                    ripple.style.transition = 'opacity 0.2s linear';
+                    ripple.style.opacity = '0';
+                }
+            }
+
+            handleMove(touch.clientX, touch.clientY);
+            e.preventDefault();
+        };
+
+        const onTouchEnd = (e) => {
+            if (touchTimer) {
+                clearTimeout(touchTimer);
+                touchTimer = null;
+                ripple.style.transition = 'opacity 0.2s linear';
+                ripple.style.opacity = '0';
+            }
+            if (isActive) {
+                ghost.style.display = 'none';
+            }
+        };
+
         const onKeyDown = (e) => {
             if (e.key === 'Escape' && isActive) {
                 cleanup();
@@ -3872,18 +4150,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const cleanup = () => {
             isActive = false;
+            if (touchTimer) clearTimeout(touchTimer);
             if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
             window.removeEventListener('mousemove', onMouseMove);
             window.removeEventListener('click', onClick, true);
+            window.removeEventListener('dblclick', onClick, true);
             window.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('touchstart', onTouchStart, { passive: false });
+            window.removeEventListener('touchmove', onTouchMove, { passive: false });
+            window.removeEventListener('touchend', onTouchEnd);
         };
 
         // Delay the click attachment slightly so the current click doesn't trigger it immediately
         setTimeout(() => {
             window.addEventListener('click', onClick, true);
+            window.addEventListener('dblclick', onClick, true);
         }, 100);
         window.addEventListener('mousemove', onMouseMove);
         window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('touchstart', onTouchStart, { passive: false });
+        window.addEventListener('touchmove', onTouchMove, { passive: false });
+        window.addEventListener('touchend', onTouchEnd);
     }
 
     function startStampMoveMode(stamp) {
@@ -3918,6 +4205,23 @@ document.addEventListener('DOMContentLoaded', () => {
         label.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:10px;color:#92400e;pointer-events:none;white-space:nowrap;';
         ghost.appendChild(label);
 
+        let ripple = document.createElement('div');
+        ripple.style.position = 'absolute';
+        ripple.style.top = '50%';
+        ripple.style.left = '50%';
+        ripple.style.width = '100px';
+        ripple.style.height = '100px';
+        ripple.style.marginTop = '-50px';
+        ripple.style.marginLeft = '-50px';
+        ripple.style.borderRadius = '50%';
+        ripple.style.border = '6px solid rgba(0, 150, 255, 0.8)';
+        ripple.style.backgroundColor = 'rgba(0, 150, 255, 0.2)';
+        ripple.style.pointerEvents = 'none';
+        ripple.style.opacity = '0';
+        ripple.style.transform = 'scale(0)';
+        ripple.style.transformOrigin = 'center center';
+        ghost.appendChild(ripple);
+
         document.body.appendChild(ghost);
 
         let currentPdfX   = null;
@@ -3925,23 +4229,23 @@ document.addEventListener('DOMContentLoaded', () => {
         let currentPageNum = null;
         let isActive = true;
 
-        const onMouseMove = (e) => {
+        const handleMove = (clientX, clientY) => {
             if (!isActive) return;
             ghost.style.display = 'block';
 
-            const hitTarget = document.elementFromPoint(e.clientX, e.clientY);
+            const hitTarget = document.elementFromPoint(clientX, clientY);
             const wrapper   = hitTarget ? hitTarget.closest('.page-wrapper') : null;
 
-            let snappedX = e.clientX;
-            let snappedY = e.clientY;
+            let snappedX = clientX;
+            let snappedY = clientY;
 
             if (wrapper) {
                 currentPageNum = parseInt(wrapper.dataset.page);
                 const rect  = wrapper.getBoundingClientRect();
                 const scale = rect.width / wrapper.offsetWidth;
 
-                let pdfX = (e.clientX - rect.left) / scale;
-                let pdfY = (e.clientY - rect.top)  / scale;
+                let pdfX = (clientX - rect.left) / scale;
+                let pdfY = (clientY - rect.top)  / scale;
 
                 // Snap to vector line
                 if (window.canvasRenderers) {
@@ -3968,11 +4272,9 @@ document.addEventListener('DOMContentLoaded', () => {
             ghost.style.top  = snappedY + 'px';
         };
 
-        const onClick = async (e) => {
-            if (!isActive) return;
-            e.preventDefault();
-            e.stopPropagation();
+        const onMouseMove = (e) => handleMove(e.clientX, e.clientY);
 
+        const executePlacement = async () => {
             if (currentPdfX === null || currentPdfY === null || currentPageNum === null) {
                 cleanup();
                 return;
@@ -3981,6 +4283,10 @@ document.addEventListener('DOMContentLoaded', () => {
             isActive = false;
             ghost.style.backgroundColor = 'rgba(0,200,100,0.35)';
             ghost.style.border          = '2px solid #16a34a';
+            ghost.style.transition      = 'opacity 0.3s ease';
+            setTimeout(() => {
+                if (ghost) ghost.style.opacity = '0';
+            }, 300);
 
             try {
                 const title = stamp.pattern_name || stamp.name || stamp.title || 'Stamp ' + stamp.xref;
@@ -4023,6 +4329,93 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
+        let isTouchMode = false;
+
+        const onClick = async (e) => {
+            if (!isActive || isTouchMode) return;
+            e.preventDefault();
+            e.stopPropagation();
+            await executePlacement();
+        };
+
+        let touchTimer = null;
+        let lastTouchX = null;
+        let lastTouchY = null;
+        let lastTapTime = 0;
+        let lastTapX = 0;
+        let lastTapY = 0;
+
+        const onTouchStart = (e) => {
+            if (!isActive || e.touches.length !== 1) return;
+            isTouchMode = true;
+            const touch = e.touches[0];
+            lastTouchX = touch.clientX;
+            lastTouchY = touch.clientY;
+
+            handleMove(touch.clientX, touch.clientY);
+
+            const now = Date.now();
+            const dx = touch.clientX - lastTapX;
+            const dy = touch.clientY - lastTapY;
+            const distSq = dx * dx + dy * dy;
+
+            if (now - lastTapTime < 600 && distSq < 2025) { 
+                executePlacement();
+                return;
+            }
+
+            lastTapTime = now;
+            lastTapX = touch.clientX;
+            lastTapY = touch.clientY;
+
+            ripple.style.transition = 'none';
+            ripple.style.transform = 'scale(0.2)';
+            ripple.style.opacity = '0.8';
+
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    ripple.style.transition = 'transform 0.6s ease-out, opacity 0.6s ease-out';
+                    ripple.style.transform = 'scale(3)';
+                    ripple.style.opacity = '0';
+                });
+            });
+
+            touchTimer = setTimeout(() => {
+                if (isActive) executePlacement();
+            }, 600);
+        };
+
+        const onTouchMove = (e) => {
+            if (!isActive || e.touches.length !== 1) return;
+            const touch = e.touches[0];
+            
+            if (touchTimer) {
+                const dx = touch.clientX - lastTouchX;
+                const dy = touch.clientY - lastTouchY;
+                if (dx * dx + dy * dy > 100) { 
+                    clearTimeout(touchTimer);
+                    touchTimer = null;
+                    ripple.style.transition = 'opacity 0.2s linear';
+                    ripple.style.opacity = '0';
+                }
+            }
+
+            handleMove(touch.clientX, touch.clientY);
+            e.preventDefault();
+        };
+
+        const onTouchEnd = (e) => {
+            if (touchTimer) {
+                clearTimeout(touchTimer);
+                touchTimer = null;
+                ripple.style.transition = 'opacity 0.2s linear';
+                ripple.style.opacity = '0';
+            }
+            if (isActive) {
+                ghost.style.display = 'none';
+            }
+        };
+
         const onKeyDown = (e) => {
             if (e.key === 'Escape' && isActive) {
                 cleanup();
@@ -4031,17 +4424,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const cleanup = () => {
             isActive = false;
+            if (touchTimer) clearTimeout(touchTimer);
             if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
             window.removeEventListener('mousemove', onMouseMove);
             window.removeEventListener('click', onClick, true);
+            window.removeEventListener('dblclick', onClick, true);
             window.removeEventListener('keydown', onKeyDown);
+            window.removeEventListener('touchstart', onTouchStart, { passive: false });
+            window.removeEventListener('touchmove', onTouchMove, { passive: false });
+            window.removeEventListener('touchend', onTouchEnd);
         };
 
         setTimeout(() => {
             window.addEventListener('click', onClick, true);
+            window.addEventListener('dblclick', onClick, true);
         }, 100);
         window.addEventListener('mousemove', onMouseMove);
         window.addEventListener('keydown', onKeyDown);
+        window.addEventListener('touchstart', onTouchStart, { passive: false });
+        window.addEventListener('touchmove', onTouchMove, { passive: false });
+        window.addEventListener('touchend', onTouchEnd);
     }
 
     // Expose move mode globally so app.js stamp rows can trigger it

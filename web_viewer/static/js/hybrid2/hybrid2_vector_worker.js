@@ -2,11 +2,39 @@
 
 // -- Spatial Hash Grid (pure JS, flat array offsets) ---------------------------
 class SpatialHashGrid {
-    constructor(width, height, cellSize = 80) {
+    constructor(width, height, cellSize = 256) {
         this.cellSize = cellSize;
         this.cols = Math.ceil(width / cellSize);
         this.rows = Math.ceil(height / cellSize);
-        this.grid = new Array(this.cols * this.rows).fill(null).map(() => []);
+        const numCells = this.cols * this.rows;
+        
+        // head[cellIdx] points to the first node in the cell's linked list
+        this.heads = new Int32Array(numCells).fill(-1);
+        
+        // Initial capacity for linked list nodes
+        this.capacity = 100000;
+        // vals[nodeIdx] stores the buffer offset
+        this.vals = new Int32Array(this.capacity);
+        // nexts[nodeIdx] points to the next nodeIdx in the list
+        this.nexts = new Int32Array(this.capacity);
+        this.nodeCount = 0;
+        
+        // Huge shapes go here to prevent node duplication
+        this.globalItems = [];
+    }
+    
+    _ensureCapacity(needed) {
+        if (this.nodeCount + needed > this.capacity) {
+            let newCap = this.capacity * 2;
+            while (this.nodeCount + needed > newCap) newCap *= 2;
+            const newVals = new Int32Array(newCap);
+            newVals.set(this.vals);
+            this.vals = newVals;
+            const newNexts = new Int32Array(newCap);
+            newNexts.set(this.nexts);
+            this.nexts = newNexts;
+            this.capacity = newCap;
+        }
     }
 
     _getCellIndices(bounds) {
@@ -15,33 +43,45 @@ class SpatialHashGrid {
         const startRow = Math.max(0, Math.floor(bounds.minY / this.cellSize));
         const endRow   = Math.min(this.rows - 1, Math.floor(bounds.maxY / this.cellSize));
         const cells = [];
-        for (let r = startRow; r <= endRow; r++)
-            for (let c = startCol; c <= endCol; c++)
+        for (let r = startRow; r <= endRow; r++) {
+            for (let c = startCol; c <= endCol; c++) {
                 cells.push(r * this.cols + c);
+            }
+        }
         return cells;
     }
 
     insert(offset, bounds) {
         const cells = this._getCellIndices(bounds);
-        for (let i = 0; i < cells.length; i++)
-            this.grid[cells[i]].push(offset);
+        if (cells.length > 50) {
+            this.globalItems.push(offset);
+            return;
+        }
+        this._ensureCapacity(cells.length);
+        for (let i = 0; i < cells.length; i++) {
+            const cellIdx = cells[i];
+            const nodeIdx = this.nodeCount++;
+            this.vals[nodeIdx] = offset;
+            this.nexts[nodeIdx] = this.heads[cellIdx];
+            this.heads[cellIdx] = nodeIdx;
+        }
     }
 
     queryRect(rect) {
-        const startCol = Math.max(0, Math.floor(rect.minX / this.cellSize));
-        const endCol   = Math.min(this.cols - 1, Math.floor(rect.maxX / this.cellSize));
-        const startRow = Math.max(0, Math.floor(rect.minY / this.cellSize));
-        const endRow   = Math.min(this.rows - 1, Math.floor(rect.maxY / this.cellSize));
+        const cells = this._getCellIndices(rect);
         const results  = new Set();
-        for (let r = startRow; r <= endRow; r++) {
-            for (let c = startCol; c <= endCol; c++) {
-                const cellIdx = r * this.cols + c;
-                if (cellIdx >= 0 && cellIdx < this.grid.length) {
-                    const items = this.grid[cellIdx];
-                    for (let i = 0; i < items.length; i++)
-                        results.add(items[i]);
+        for (let i = 0; i < cells.length; i++) {
+            const cellIdx = cells[i];
+            if (cellIdx >= 0 && cellIdx < this.heads.length) {
+                let curr = this.heads[cellIdx];
+                while (curr !== -1) {
+                    results.add(this.vals[curr]);
+                    curr = this.nexts[curr];
                 }
             }
+        }
+        for (let i = 0; i < this.globalItems.length; i++) {
+            results.add(this.globalItems[i]);
         }
         return Array.from(results);
     }

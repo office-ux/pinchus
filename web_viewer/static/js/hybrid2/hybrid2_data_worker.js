@@ -67,8 +67,10 @@ self.onmessage = async function(e) {
             buffer[offset++] = 0; // EOF marker
 
             // 4. Return the parsed data and binary buffer back to main thread
-            // We pass data back, main thread will still structured-clone it, 
-            // but the HEAVY JSON parsing and HEAVY binary compilation is off-thread.
+            // We pass data back, but we DELETE the massive drawings array first
+            // to avoid freezing the main thread with structured cloning and massive memory hoarding!
+            delete data.drawings;
+
             self.postMessage({
                 type: 'FETCH_SUCCESS',
                 reqId: reqId,

@@ -6,11 +6,36 @@
  */
 
 class SpatialHashGrid {
-    constructor(width, height, cellSize = 80) {
+    constructor(width, height, cellSize = 256, itemResolver = null) {
         this.cellSize = cellSize;
         this.cols = Math.ceil(width / cellSize);
         this.rows = Math.ceil(height / cellSize);
-        this.grid = new Array(this.cols * this.rows).fill(null).map(() => []);
+        this.itemResolver = itemResolver;
+        
+        const numCells = this.cols * this.rows;
+        this.heads = new Int32Array(numCells).fill(-1);
+        
+        this.capacity = 100000;
+        this.vals = new Int32Array(this.capacity);
+        this.nexts = new Int32Array(this.capacity);
+        this.nodeCount = 0;
+
+        // Huge shapes go here to prevent node duplication
+        this.globalItems = [];
+    }
+    
+    _ensureCapacity(needed) {
+        if (this.nodeCount + needed > this.capacity) {
+            let newCap = this.capacity * 2;
+            while (this.nodeCount + needed > newCap) newCap *= 2;
+            const newVals = new Int32Array(newCap);
+            newVals.set(this.vals);
+            this.vals = newVals;
+            const newNexts = new Int32Array(newCap);
+            newNexts.set(this.nexts);
+            this.nexts = newNexts;
+            this.capacity = newCap;
+        }
     }
 
     _getCellIndices(bounds) {
@@ -28,10 +53,19 @@ class SpatialHashGrid {
         return cells;
     }
 
-    insert(item, bounds) {
+    insert(id, bounds) {
         const cells = this._getCellIndices(bounds);
+        if (cells.length > 50) {
+            this.globalItems.push(id);
+            return;
+        }
+        this._ensureCapacity(cells.length);
         for (let i = 0; i < cells.length; i++) {
-            this.grid[cells[i]].push({ item, bounds });
+            const cellIdx = cells[i];
+            const nodeIdx = this.nodeCount++;
+            this.vals[nodeIdx] = id;
+            this.nexts[nodeIdx] = this.heads[cellIdx];
+            this.heads[cellIdx] = nodeIdx;
         }
     }
 
@@ -42,14 +76,16 @@ class SpatialHashGrid {
             minY: y - radius,
             maxY: y + radius
         };
-        const candidates = this.queryRect(bounds);
+        const candidateIds = this.queryRect(bounds);
         
         let bestItem = null;
         let minDistance = radius;
         let bestArea = Infinity;
 
         // Perfect geometric point-to-primitive distance check
-        candidates.forEach(cand => {
+        candidateIds.forEach(candId => {
+            const cand = this.itemResolver ? this.itemResolver(candId) : candId;
+            if (!cand) return;
             const dist = this._getDistanceToItem(x, y, cand);
             if (dist < minDistance) {
                 minDistance = dist;
@@ -75,10 +111,12 @@ class SpatialHashGrid {
             minY: y - radius,
             maxY: y + radius
         };
-        const candidates = this.queryRect(bounds);
+        const candidateIds = this.queryRect(bounds);
         
         const results = [];
-        candidates.forEach(cand => {
+        candidateIds.forEach(candId => {
+            const cand = this.itemResolver ? this.itemResolver(candId) : candId;
+            if (!cand) return;
             const dist = this._getDistanceToItem(x, y, cand);
             if (dist <= radius) {
                 results.push({ item: cand, distance: dist });
@@ -90,22 +128,20 @@ class SpatialHashGrid {
     }
 
     queryRect(rect) {
-        const startCol = Math.max(0, Math.floor(rect.minX / this.cellSize));
-        const endCol = Math.min(this.cols - 1, Math.floor(rect.maxX / this.cellSize));
-        const startRow = Math.max(0, Math.floor(rect.minY / this.cellSize));
-        const endRow = Math.min(this.rows - 1, Math.floor(rect.maxY / this.cellSize));
-
+        const cells = this._getCellIndices(rect);
         const results = new Set();
-        for (let r = startRow; r <= endRow; r++) {
-            for (let c = startCol; c <= endCol; c++) {
-                const cellIdx = r * this.cols + c;
-                if (cellIdx >= 0 && cellIdx < this.grid.length) {
-                    const items = this.grid[cellIdx];
-                    for (let i = 0; i < items.length; i++) {
-                        results.add(items[i].item);
-                    }
+        for (let i = 0; i < cells.length; i++) {
+            const cellIdx = cells[i];
+            if (cellIdx >= 0 && cellIdx < this.heads.length) {
+                let curr = this.heads[cellIdx];
+                while (curr !== -1) {
+                    results.add(this.vals[curr]);
+                    curr = this.nexts[curr];
                 }
             }
+        }
+        for (let i = 0; i < this.globalItems.length; i++) {
+            results.add(this.globalItems[i]);
         }
         return Array.from(results);
     }
@@ -205,29 +241,105 @@ class SpatialHashGrid {
 }
 
 class CanvasVectorRenderer {
-    constructor(pageWrapper, bounds, drawings, pageNum) {
+    constructor(pageWrapper, bounds, drawings, pageNum, buffer = null) {
         this.wrapper = pageWrapper;
         this.bounds = bounds;
         this.drawings = drawings;
+        this.buffer = buffer;
         this.pageNum = pageNum;
         
         // Use existing SVG overlay for dynamic highlights
         this.svgOverlay = this.wrapper.querySelector('.vector-overlay');
         
-        this.spatialIndex = new SpatialHashGrid(bounds.width, bounds.height);
+        const itemResolver = (id) => {
+            if (this.buffer) return this._parseItemFromBuffer(id);
+            if (this.drawings && id >= 0 && id < this.drawings.length) return this.drawings[id];
+            return null;
+        };
+
+        this.spatialIndex = new SpatialHashGrid(bounds.width, bounds.height, 256, itemResolver);
         
         console.time(`buildIndex_page_${pageNum}`);
         this.buildIndex();
         console.timeEnd(`buildIndex_page_${pageNum}`);
     }
 
+    _parseItemFromBuffer(offset) {
+        if (!this.buffer) return null;
+        let p = offset;
+        const typeId = this.buffer[p++];
+        if (typeId === 0) return null;
+        
+        const colorInt = this.buffer[p++];
+        const thickness = this.buffer[p++];
+        let hex = colorInt.toString(16);
+        while(hex.length < 6) hex = '0' + hex;
+        hex = '#' + hex;
+
+        if (typeId === 1) {
+            const start = [this.buffer[p++], this.buffer[p++]];
+            const end = [this.buffer[p++], this.buffer[p++]];
+            return { globalId: offset, page: this.pageNum, type: 'Line', color_hex: hex, thickness, start, end };
+        } else if (typeId === 2) {
+            const x = this.buffer[p++]; const y = this.buffer[p++];
+            const w = this.buffer[p++]; const h = this.buffer[p++];
+            return { globalId: offset, page: this.pageNum, type: 'Rect', color_hex: hex, thickness, x, y, width: w, height: h };
+        } else if (typeId === 3 || typeId === 4) {
+            const numPts = this.buffer[p++];
+            const points = [];
+            for(let i=0; i<numPts; i++) points.push([this.buffer[p++], this.buffer[p++]]);
+            return { globalId: offset, page: this.pageNum, type: typeId === 3 ? 'Polygon' : 'Arc/Curve', color_hex: hex, thickness, points };
+        }
+        return null;
+    }
+
     buildIndex() {
-        this.drawings.forEach(item => {
-            const bounds = this.getItemBounds(item);
-            if (bounds) {
-                this.spatialIndex.insert(item, bounds);
+        if (this.buffer) {
+            let offset = 0;
+            while (offset < this.buffer.length) {
+                const typeId = this.buffer[offset];
+                if (typeId === 0) break;
+                
+                let b = null;
+                const currentOffset = offset;
+                let p = offset + 3; // skip type, color, thickness
+                
+                if (typeId === 1) {
+                    const x1 = this.buffer[p++]; const y1 = this.buffer[p++];
+                    const x2 = this.buffer[p++]; const y2 = this.buffer[p++];
+                    b = { minX: Math.min(x1, x2), maxX: Math.max(x1, x2), minY: Math.min(y1, y2), maxY: Math.max(y1, y2) };
+                    offset += 8;
+                } else if (typeId === 2) {
+                    const x = this.buffer[p++]; const y = this.buffer[p++];
+                    const w = this.buffer[p++]; const h = this.buffer[p++];
+                    b = { minX: Math.min(x, x+w), maxX: Math.max(x, x+w), minY: Math.min(y, y+h), maxY: Math.max(y, y+h) };
+                    offset += 7;
+                } else if (typeId === 3 || typeId === 4) {
+                    const numPts = this.buffer[p++];
+                    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                    for(let i=0; i<numPts; i++) {
+                        const px = this.buffer[p++];
+                        const py = this.buffer[p++];
+                        if (px < minX) minX = px; if (px > maxX) maxX = px;
+                        if (py < minY) minY = py; if (py > maxY) maxY = py;
+                    }
+                    b = { minX, maxX, minY, maxY };
+                    offset += 4 + numPts * 2;
+                } else {
+                    break;
+                }
+                
+                if (b) this.spatialIndex.insert(currentOffset, b);
             }
-        });
+        } else if (this.drawings) {
+            for (let i = 0; i < this.drawings.length; i++) {
+                const item = this.drawings[i];
+                const bounds = this.getItemBounds(item);
+                if (bounds) {
+                    this.spatialIndex.insert(i, bounds);
+                }
+            }
+        }
     }
 
     getItemBounds(item) {

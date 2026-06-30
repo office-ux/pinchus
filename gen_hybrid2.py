@@ -28,7 +28,7 @@ with open(r'c:\pinchus\web_viewer\static\js\app.js', encoding='utf-8') as f:
 
 # ── Patch 1: Change renderer setting constant ─────────────────────────────────
 app = app.replace(
-    "const currentRendererSetting = localStorage.getItem('pdf_renderer') || 'legacy';",
+    "const currentRendererSetting = localStorage.getItem('pdf_renderer') || 'canvas';",
     "const currentRendererSetting = 'hybrid2'; // Hybrid 2 engine"
 )
 
@@ -79,20 +79,19 @@ app = app.replace(
     "    window.canvasRenderers = canvasRenderers;\n" + WORKER_INIT + "\n    const currentRendererSetting"
 )
 
-# ── Patch 4: Replace updateVectorTiles call to use OffscreenCanvas worker ─────
-OLD_VEC = "                if (showVectors && currentRendererSetting === 'canvas') {\n                    const renderer = canvasRenderers.get(parseInt(pageNum));\n                    if (renderer) {\n                        renderer.updateVectorTiles(fetchScale, startCol, endCol, startRow, endRow, unscaledTileSize, maxW, maxH);\n                    }\n                }"
+OLD_VEC = "            if (showVectors && currentRendererSetting === 'canvas') {\n                const renderer = canvasRenderers.get(parseInt(pageNum));\n                if (renderer) {\n                    renderer.updateVectorTiles(fetchScale, startCol, endCol, startRow, endRow, unscaledTileSize, maxW, maxH);\n                }\n            }"
 
-NEW_VEC = """                // Hybrid 2: always use canvas renderer for hit-testing index,
-                // but dispatch tile painting to OffscreenCanvas worker
-                if (showVectors) {
-                    const renderer = canvasRenderers.get(parseInt(pageNum));
-                    if (renderer) {
-                        // Offscreen worker path
-                        h2UpdateWorkerVectorTiles(wrapper, parseInt(pageNum), renderer,
-                            fetchScale, startCol, endCol, startRow, endRow,
-                            unscaledTileSize, maxW, maxH);
-                    }
-                }"""
+NEW_VEC = """            // Hybrid 2: always use canvas renderer for hit-testing index,
+            // but dispatch tile painting to OffscreenCanvas worker
+            if (showVectors) {
+                const renderer = canvasRenderers.get(parseInt(pageNum));
+                if (renderer) {
+                    // Offscreen worker path
+                    h2UpdateWorkerVectorTiles(wrapper, parseInt(pageNum), renderer,
+                        fetchScale, startCol, endCol, startRow, endRow,
+                        unscaledTileSize, maxW, maxH);
+                }
+            }"""
 
 app = app.replace(OLD_VEC, NEW_VEC)
 
@@ -193,15 +192,19 @@ last_brace_pos = app.rfind('\n}')
 if last_brace_pos != -1:
     app = app[:last_brace_pos] + H2_FUNC + app[last_brace_pos:]
 
+# ── Patch 7: Support hybrid2 in canvas-specific checks ─────────────────────────
+app = app.replace(
+    "currentRendererSetting === 'canvas'",
+    "(currentRendererSetting === 'canvas' || currentRendererSetting === 'hybrid2')"
+)
+app = app.replace(
+    "currentRendererSetting !== 'canvas'",
+    "(currentRendererSetting !== 'canvas' && currentRendererSetting !== 'hybrid2')"
+)
+
 # Write output
 with open(OUT, 'w', encoding='utf-8') as f:
     f.write(JS + app)
 
 size = os.path.getsize(OUT)
 print(f"Written {size} bytes to {OUT}")
-'''
-
-with open(r'c:\pinchus\gen_hybrid2.py', 'w', encoding='utf-8') as f:
-    f.write(script_content)
-
-print("Generator script written")

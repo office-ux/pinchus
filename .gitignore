@@ -157,3 +157,12 @@ Thumbs.db
 # Project specific
 Sample pdfs/
 Projects/
+
+# Local configurations and stamp data
+config.json
+global_stamp_config.json
+web_viewer/data/global_stamps/MICHAEL JOSEPH ROBERT pemichaelrengineercom.pdf
+web_viewer/data/global_stamps/MICHAEL JOSEPH ROBERT pemichaelrengineercom.png
+
+# External node dependencies
+node_modules/

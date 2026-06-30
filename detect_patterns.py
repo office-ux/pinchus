@@ -23,16 +23,87 @@ def rotate_rel_point(p, angle):
 
 
 def get_unique_signatures(subject_matches):
-    """
-    Extract unique geometric signatures for each subject.
-    A signature is a list of segments relative to the first segment's start point.
-    """
     signatures = []
     seen_keys = set()
 
     for item in subject_matches:
         target = item["target"]
-        segments = item.get("segments", [])
+        raw_segments = item.get("segments", [])
+        if not raw_segments:
+            continue
+
+        # First pass: find all rect bounds in the stamp
+        rect_bounds_list = []
+        for seg in raw_segments:
+            if seg.get("shape_type") == "rect":
+                if "x" in seg and "y" in seg and "width" in seg and "height" in seg:
+                    w = abs(seg["width"])
+                    h = abs(seg["height"])
+                    x = min(seg["x"], seg["x"] + seg["width"])
+                    y = min(seg["y"], seg["y"] + seg["height"])
+                else:
+                    w = abs(seg["end"][0] - seg["start"][0])
+                    h = abs(seg["end"][1] - seg["start"][1])
+                    x = min(seg["start"][0], seg["end"][0])
+                    y = min(seg["start"][1], seg["end"][1])
+                rect_bounds_list.append((x, y, x + w, y + h))
+
+        segments = []
+        for seg in raw_segments:
+            stype = seg.get("shape_type", "line")
+            weight = seg.get("effective_line_weight", seg.get("line_weight", 1.0))
+            color = seg.get("stroke_color", (0,0,0))
+            
+            if stype == "rect":
+                if "x" in seg and "y" in seg and "width" in seg and "height" in seg:
+                    w = abs(seg["width"])
+                    h = abs(seg["height"])
+                    x = min(seg["x"], seg["x"] + seg["width"])
+                    y = min(seg["y"], seg["y"] + seg["height"])
+                else:
+                    w = abs(seg["end"][0] - seg["start"][0])
+                    h = abs(seg["end"][1] - seg["start"][1])
+                    x = min(seg["start"][0], seg["end"][0])
+                    y = min(seg["start"][1], seg["end"][1])
+                
+                # Explode rect into 4 line segments
+                pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+                for i in range(4):
+                    p_start = pts[i]
+                    p_end = pts[(i + 1) % 4]
+                    segments.append({
+                        "shape_type": "line",
+                        "start": p_start,
+                        "end": p_end,
+                        "length": matching_lines.dist(p_start, p_end),
+                        "line_weight": weight,
+                        "stroke_color": color
+                    })
+            elif stype == "line":
+                # Check if this line is a diagonal of any rect in rect_bounds_list
+                is_diagonal = False
+                p1 = seg["start"]
+                p2 = seg["end"]
+                tol = 1.5
+                
+                def pt_near(pt, target):
+                    return abs(pt[0] - target[0]) < tol and abs(pt[1] - target[1]) < tol
+                
+                for rx0, ry0, rx1, ry1 in rect_bounds_list:
+                    d1_fwd = pt_near(p1, (rx0, ry0)) and pt_near(p2, (rx1, ry1))
+                    d1_rev = pt_near(p2, (rx0, ry0)) and pt_near(p1, (rx1, ry1))
+                    d2_fwd = pt_near(p1, (rx1, ry0)) and pt_near(p2, (rx0, ry1))
+                    d2_rev = pt_near(p2, (rx1, ry0)) and pt_near(p1, (rx0, ry1))
+                    
+                    if d1_fwd or d1_rev or d2_fwd or d2_rev:
+                        is_diagonal = True
+                        break
+                
+                if not is_diagonal:
+                    segments.append(seg)
+            else:
+                segments.append(seg)
+                
         if not segments:
             continue
 
@@ -41,11 +112,8 @@ def get_unique_signatures(subject_matches):
         annot_rect = item.get("rect")
         if annot_rect is not None:
             try:
-                # Convert to plain floats (fitz.Rect may not survive multiprocessing pickle)
-                annot_w = float(annot_rect[2]) - float(annot_rect[0])
-                annot_h = float(annot_rect[3]) - float(annot_rect[1])
-                annot_w = abs(annot_w)
-                annot_h = abs(annot_h)
+                annot_w = abs(float(annot_rect[2]) - float(annot_rect[0]))
+                annot_h = abs(float(annot_rect[3]) - float(annot_rect[1]))
             except Exception:
                 annot_w = annot_h = 0.0
         else:
@@ -65,11 +133,11 @@ def get_unique_signatures(subject_matches):
                 base["points_rel"] = [(p[0] - base_x, p[1] - base_y) for p in pts]
                 base["start_rel"] = (pts[0][0] - base_x, pts[0][1] - base_y)
                 base["end_rel"] = (pts[3][0] - base_x, pts[3][1] - base_y)
-            elif shape_type == "polygon":
-                pts = seg["points"]
-                base["points_rel"] = [(p[0] - base_x, p[1] - base_y) for p in pts]
-                base["start_rel"] = (pts[0][0] - base_x, pts[0][1] - base_y)
-                base["end_rel"] = (pts[2][0] - base_x, pts[2][1] - base_y) if len(pts) > 2 else (pts[-1][0] - base_x, pts[-1][1] - base_y)
+            elif shape_type == "rect":
+                base["start_rel"] = (seg["start"][0] - base_x, seg["start"][1] - base_y)
+                base["end_rel"] = (seg["end"][0] - base_x, seg["end"][1] - base_y)
+                base["width"] = seg["width"]
+                base["height"] = seg["height"]
             else:
                 base["start_rel"] = (seg["start"][0] - base_x, seg["start"][1] - base_y)
                 base["end_rel"] = (seg["end"][0] - base_x, seg["end"][1] - base_y)
@@ -101,21 +169,26 @@ def get_unique_signatures(subject_matches):
                         "stroke_color": s["stroke_color"]
                     }
                     if s["shape_type"] == "arc":
-                        new_s["points_rel"] = [rotate_rel_point(p, angle) for p in s["points_rel"]]
-                    elif s["shape_type"] == "polygon":
-                        new_s["points_rel"] = [rotate_rel_point(p, angle) for p in s["points_rel"]]
+                        new_s["points_rel"] = [rotate_rel_point(p, angle) for p in s.get("points_rel", [])]
+                    elif s["shape_type"] == "rect":
+                        if angle in [90, 270]:
+                            new_s["width"] = s["height"]
+                            new_s["height"] = s["width"]
+                        else:
+                            new_s["width"] = s["width"]
+                            new_s["height"] = s["height"]
                     temp_segs.append(new_s)
                 
                 rx, ry = temp_segs[0]["start_rel"]
                 for s in temp_segs:
                     s["start_rel"] = (s["start_rel"][0] - rx, s["start_rel"][1] - ry)
                     s["end_rel"] = (s["end_rel"][0] - rx, s["end_rel"][1] - ry)
-                    if s["shape_type"] in ("arc", "polygon"):
-                        s["points_rel"] = [(p[0] - rx, p[1] - ry) for p in s["points_rel"]]                
+                    if s["shape_type"] == "arc":
+                        s["points_rel"] = [(p[0] - rx, p[1] - ry) for p in s.get("points_rel", [])]
+                
                 xs = [s["start_rel"][0] for s in temp_segs] + [s["end_rel"][0] for s in temp_segs]
                 ys = [s["start_rel"][1] for s in temp_segs] + [s["end_rel"][1] for s in temp_segs]
                 
-                # Calculate the effective match weight (average of segment weights)
                 seg_weights = [s["line_weight"] for s in temp_segs]
                 match_weight = sum(seg_weights) / len(seg_weights) if seg_weights else 0.0
 
@@ -123,29 +196,36 @@ def get_unique_signatures(subject_matches):
                     "target": target,
                     "type": item.get("type"),
                     "segments": temp_segs,
-                    "width": max(xs) - min(xs),
-                    "height": max(ys) - min(ys),
+                    "width": max(xs) - min(xs) if xs else 0,
+                    "height": max(ys) - min(ys) if ys else 0,
                     "annot_width": annot_w if angle in [0, 180] else annot_h,
                     "annot_height": annot_h if angle in [0, 180] else annot_w,
                     "angle": angle,
                     "match_line_weight": match_weight,
-                    "stroke_color": temp_segs[0]["stroke_color"]
+                    "stroke_color": temp_segs[0]["stroke_color"] if temp_segs else (0,0,0)
                 })
             
     return signatures
 
 
-def iter_page_items(page):
+def iter_page_items(page, box_dims=None, len_tol=1.0):
     for drawing_index, drawing in enumerate(page.get_drawings()):
         line_weight = float(drawing.get("width") or 1.0)
-        stroke_color = drawing.get("color") or (0, 0, 0)
+        
+        stroke_color = drawing.get("color")
+        fill_color = drawing.get("fill")
+        if stroke_color is None and fill_color is not None:
+            stroke_color = fill_color
+        elif stroke_color is None:
+            stroke_color = (0, 0, 0)
         
         for item_index, item in enumerate(drawing["items"]):
+            source_lbl = f"drawing {drawing_index}, item {item_index}"
             if item[0] == "l":
                 start = item[1]
                 end = item[2]
                 yield {
-                    "source": f"drawing {drawing_index}, item {item_index}",
+                    "source": source_lbl,
                     "shape_type": "line",
                     "start": (start[0], start[1]),
                     "end": (end[0], end[1]),
@@ -155,19 +235,52 @@ def iter_page_items(page):
                 }
             elif item[0] == "re":
                 rect = item[1]
-                yield {
-                    "source": f"drawing {drawing_index}, item {item_index}",
-                    "shape_type": "rect",
-                    "x": rect.x0,
-                    "y": rect.y0,
-                    "width": rect.x1 - rect.x0,
-                    "height": rect.y1 - rect.y0,
-                    "start": (rect.x0, rect.y0),
-                    "end": (rect.x1, rect.y1),
-                    "length": 2 * (rect.x1 - rect.x0 + rect.y1 - rect.y0),
-                    "line_weight": line_weight,
-                    "stroke_color": stroke_color,
-                }
+                w = abs(rect.x1 - rect.x0)
+                h = abs(rect.y1 - rect.y0)
+                x = min(rect.x0, rect.x1)
+                y = min(rect.y0, rect.y1)
+                
+                # Check if this rect matches any signature dimensions
+                should_explode = False
+                if box_dims:
+                    for bw, bh in box_dims:
+                        if (abs(w - bw) <= len_tol and abs(h - bh) <= len_tol) or \
+                           (abs(w - bh) <= len_tol and abs(h - bw) <= len_tol):
+                            should_explode = True
+                            break
+                else:
+                    should_explode = True
+                
+                if should_explode:
+                    yield from explode_rect_to_lines(x, y, w, h, line_weight, stroke_color, source_lbl)
+                else:
+                    # Skip completely to save memory and time
+                    pass
+            elif item[0] == "qu":
+                quad = item[1]
+                pts = [(quad.ul.x, quad.ul.y), (quad.ur.x, quad.ur.y), (quad.lr.x, quad.lr.y), (quad.ll.x, quad.ll.y)]
+                
+                # Check if quad bounding box matches any signature dimensions
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                qw = max(xs) - min(xs)
+                qh = max(ys) - min(ys)
+                
+                should_explode = False
+                if box_dims:
+                    for bw, bh in box_dims:
+                        if (abs(qw - bw) <= len_tol and abs(qh - bh) <= len_tol) or \
+                           (abs(qw - bh) <= len_tol and abs(qh - bw) <= len_tol):
+                            should_explode = True
+                            break
+                else:
+                    should_explode = True
+                
+                if should_explode:
+                    yield from explode_polygon_to_lines(pts, line_weight, stroke_color, source_lbl)
+                else:
+                    # Skip completely
+                    pass
             elif item[0] == "c":
                 p1, p2, p3, p4 = item[1], item[2], item[3], item[4]
                 pts = [(p1.x, p1.y), (p2.x, p2.y), (p3.x, p3.y), (p4.x, p4.y)]
@@ -175,39 +288,57 @@ def iter_page_items(page):
                 hull = (matching_lines.dist(pts[0], pts[1]) + 
                         matching_lines.dist(pts[1], pts[2]) + 
                         matching_lines.dist(pts[2], pts[3]))
-                approx_length = (chord + hull) / 2
                 yield {
-                    "source": f"drawing {drawing_index}, item {item_index}",
+                    "source": source_lbl,
                     "shape_type": "arc",
                     "points": pts,
                     "start": pts[0],
                     "end": pts[3],
-                    "length": approx_length,
-                    "line_weight": line_weight,
-                    "stroke_color": stroke_color,
-                }
-            elif item[0] == "qu":
-                quad = item[1]
-                ul, ur, lr, ll = (quad.ul.x, quad.ul.y), (quad.ur.x, quad.ur.y), (quad.lr.x, quad.lr.y), (quad.ll.x, quad.ll.y)
-                pts = [ul, ur, lr, ll]
-                d1 = matching_lines.dist(ul, ur)
-                d2 = matching_lines.dist(ur, lr)
-                d3 = matching_lines.dist(lr, ll)
-                d4 = matching_lines.dist(ll, ul)
-                perimeter = d1 + d2 + d3 + d4
-                yield {
-                    "source": f"drawing {drawing_index}, item {item_index}",
-                    "shape_type": "polygon",
-                    "points": pts,
-                    "start": pts[0],
-                    "end": pts[2],
-                    "length": perimeter,
+                    "length": (chord + hull) / 2,
                     "line_weight": line_weight,
                     "stroke_color": stroke_color,
                 }
 
 
-def cluster_items(items, max_dist):
+def explode_rect_to_lines(x, y, w, h, line_weight, stroke_color, source=""):
+    x0, x1 = min(x, x + w), max(x, x + w)
+    y0, y1 = min(y, y + h), max(y, y + h)
+    pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    lines = []
+    for i in range(4):
+        p_start = pts[i]
+        p_end = pts[(i + 1) % 4]
+        lines.append({
+            "source": source,
+            "shape_type": "line",
+            "start": p_start,
+            "end": p_end,
+            "length": matching_lines.dist(p_start, p_end),
+            "line_weight": line_weight,
+            "effective_line_weight": line_weight,
+            "stroke_color": stroke_color
+        })
+    return lines
+
+def explode_polygon_to_lines(pts, line_weight, stroke_color, source=""):
+    lines = []
+    n = len(pts)
+    for i in range(n):
+        p_start = pts[i]
+        p_end = pts[(i + 1) % n]
+        lines.append({
+            "source": source,
+            "shape_type": "line",
+            "start": p_start,
+            "end": p_end,
+            "length": matching_lines.dist(p_start, p_end),
+            "line_weight": line_weight,
+            "effective_line_weight": line_weight,
+            "stroke_color": stroke_color
+        })
+    return lines
+
+def cluster_lines(items, max_dist):
     if not items:
         return []
     
@@ -340,6 +471,25 @@ def match_pattern(cluster, signature, scan_cfg):
                 found_match = False
                 for j, l in enumerate(remaining_cluster):
                     if l["shape_type"] != shape_type: continue
+                    
+                    # Quick bounding box/position check
+                    p1 = l["start"]
+                    p2 = l["end"]
+                    p1_x, p1_y = p1[0], p1[1]
+                    p2_x, p2_y = p2[0], p2[1]
+                    ts_x, ts_y = target_s[0], target_s[1]
+                    te_x, te_y = target_e[0], target_e[1]
+                    
+                    # Check X overlap
+                    if min(p1_x, p2_x) - pos_tol > max(ts_x, te_x) or \
+                       max(p1_x, p2_x) + pos_tol < min(ts_x, te_x):
+                        continue
+                        
+                    # Check Y overlap
+                    if min(p1_y, p2_y) - pos_tol > max(ts_y, te_y) or \
+                       max(p1_y, p2_y) + pos_tol < min(ts_y, te_y):
+                        continue
+                        
                     if abs(l["length"] - sig_seg["length"]) > len_tol: continue
                     if abs(l["line_weight"] - sig_seg["line_weight"]) > weight_tol: continue
                     if not matching_lines.colors_match(l["stroke_color"], sig_seg["stroke_color"], color_tol): continue
@@ -442,29 +592,41 @@ def detect_patterns_in_page_worker(args):
     doc = fitz.open(pdf_path)
     page = doc[page_idx]
     
-    # 1. Extract all items on page
-    page_items = list(iter_page_items(page))
+    # Extract unique box dimensions from signatures for filtering rects
+    box_dims = []
+    for sig in signatures:
+        if "width" in sig and "height" in sig:
+            box_dims.append((sig["width"], sig["height"]))
+            
+    len_tol = scan_cfg.get("length_tolerance", 1.0)
+    page_items = list(iter_page_items(page, box_dims=box_dims, len_tol=len_tol))
     
     filtered_items = []
     for item in page_items:
-        matched = False
+        matched_targets = set()
         for sig in signatures:
             for s in sig["segments"]:
                 if item["shape_type"] != s.get("shape_type", "line"): continue
-                if abs(item["length"] - s["length"]) > scan_cfg["length_tolerance"]: continue
+                
+                if item["shape_type"] == "rect":
+                    if abs(item["width"] - s["width"]) > scan_cfg["length_tolerance"]: continue
+                    if abs(item["height"] - s["height"]) > scan_cfg["length_tolerance"]: continue
+                else:
+                    if abs(item["length"] - s["length"]) > scan_cfg["length_tolerance"]: continue
+                    
                 if abs(item["line_weight"] - s["line_weight"]) > scan_cfg["line_weight_tolerance"]: continue
                 if not matching_lines.colors_match(item["stroke_color"], s["stroke_color"], scan_cfg["color_tolerance"]): continue
-                matched = True
+                matched_targets.add(sig["target"])
                 break
-            if matched: break
             
-        if matched:
+        if matched_targets:
+            item["matched_targets"] = list(matched_targets)
             filtered_items.append(item)
             
     # 2. Cluster and match
     patterns = []
     if filtered_items:
-        clusters = cluster_items(filtered_items, scan_cfg["dedupe_distance"])
+        clusters = cluster_lines(filtered_items, scan_cfg["dedupe_distance"])
         for cluster in clusters:
             for sig in signatures:
                 match = match_pattern(cluster, sig, scan_cfg)

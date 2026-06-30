@@ -151,13 +151,15 @@ def save_pattern_pdf(pdf_path, detected_patterns, cfg):
     for page_num in sorted(patterns_by_page.keys()):
         page = doc[page_num - 1]
 
-        # Draw all detection lines in one Shape commit per page
+        # Draw all detection rects in one Shape commit per page
         shape = page.new_shape()
         for i, pattern in patterns_by_page[page_num]:
             color = color_map[pattern["target"]]
-            for line in pattern["lines"]:
-                shape.draw_line(line["start"], line["end"])
-            shape.finish(color=color, width=4.0, stroke_opacity=0.8)
+            bbox = pattern.get("bbox")
+            if bbox:
+                # bbox is (x0, y0, x1, y1)
+                shape.draw_rect(fitz.Rect(bbox[0], bbox[1], bbox[2], bbox[3]))
+            shape.finish(color=color, width=4.0, stroke_opacity=0.8, fill_opacity=0.0)
         shape.commit(overlay=True)
 
         # Add one Stamp annotation per pattern

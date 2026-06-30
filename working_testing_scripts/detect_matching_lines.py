@@ -145,6 +145,34 @@ def iter_page_lines(page):
                         "line_weight": float(line_weight),
                         "stroke_color": stroke_color,
                     }
+            elif item[0] == "qu":
+                quad = item[1]
+                points = [
+                    (quad.ul, quad.ur),
+                    (quad.ur, quad.lr),
+                    (quad.lr, quad.ll),
+                    (quad.ll, quad.ul),
+                ]
+                for quad_index, (start, end) in enumerate(points, 1):
+                    yield {
+                        "source": f"drawing {drawing_index}, item {item_index}, quad side {quad_index}",
+                        "start": start,
+                        "end": end,
+                        "length": dist(start, end),
+                        "line_weight": float(line_weight),
+                        "stroke_color": stroke_color,
+                    }
+            elif item[0] == "c":
+                start = item[1]
+                end = item[4]
+                yield {
+                    "source": f"drawing {drawing_index}, item {item_index}, curve",
+                    "start": start,
+                    "end": end,
+                    "length": dist(start, end),
+                    "line_weight": float(line_weight),
+                    "stroke_color": stroke_color,
+                }
 
 
 def format_line(line, matched_targets):
@@ -236,15 +264,27 @@ def save_layered_matching_pdf(pdf_path, page_matches, cfg):
         page = doc[page_match["page"] - 1]
         for line in page_match["lines"]:
             for target in sorted(set(line["matched_targets"])):
-                page.draw_line(
-                    line["start"],
-                    line["end"],
-                    color=color_map[target],
-                    width=scan_cfg["output_line_width"],
-                    overlay=True,
-                    stroke_opacity=0.85,
-                    oc=layers[target],
-                )
+                shape_type = line.get("shape_type", "line")
+                if shape_type == "rect":
+                    rect = fitz.Rect(line["x"], line["y"], line["x"] + line["width"], line["y"] + line["height"])
+                    page.draw_rect(
+                        rect,
+                        color=color_map[target],
+                        width=scan_cfg["output_line_width"],
+                        overlay=True,
+                        stroke_opacity=0.85,
+                        oc=layers[target],
+                    )
+                else:
+                    page.draw_line(
+                        line["start"],
+                        line["end"],
+                        color=color_map[target],
+                        width=scan_cfg["output_line_width"],
+                        overlay=True,
+                        stroke_opacity=0.85,
+                        oc=layers[target],
+                    )
 
     doc.save(output_path, garbage=4, deflate=True)
     doc.close()
