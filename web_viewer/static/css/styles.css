@@ -364,19 +364,30 @@ h1, h2, h3 {
     opacity: 1;
 }
 
+/* Canvas vector tiles are invisible hit-test layers only.
+   All visual rendering is handled by the PyMuPDF JPEG tiles (.pdf-tile)
+   which have the correct PDF paint order. */
+.vector-tile,
+.h2-vector-tile {
+    position: absolute;
+    pointer-events: none;
+    opacity: 0 !important;
+    z-index: 3;
+}
+
 .vector-overlay {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    z-index: 5;
+    z-index: 15; /* Increased from 5 to 15 so it sits on top of .vector-item stamps (z-index 11) */
     pointer-events: none; /* Disabled by default and always none to prevent container interception */
 }
 
-/* Enable pointer events for SVG overlays that need interaction */
+/* Disable pointer events on the SVG itself so clicks pass through to stamps below it */
 .vector-overlay.page-svg {
-    pointer-events: all;
+    pointer-events: none;
 }
 
 /* PDF hyperlink hit zones – always show pointer hand */
@@ -1382,7 +1393,8 @@ body.stamps-mode-active .stamp-highlight-rect {
     bottom: 20px;
     left: 290px;
     width: 400px;
-    z-index: 9999;
+    height: 300px;
+    z-index: 10100;
     resize: both;
     overflow: hidden;
     box-shadow: 0 10px 25px rgba(0,0,0,0.5);
@@ -1443,7 +1455,8 @@ body.stamps-mode-active .stamp-highlight-rect {
 }
 
 .scanner-log-full {
-    max-height: 220px;
+    flex: 1;
+    min-height: 0;
     overflow: auto;
     border-top: 1px solid #334155;
     background: rgba(2, 6, 23, 0.6);

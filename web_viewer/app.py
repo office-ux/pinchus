@@ -500,9 +500,16 @@ def pdf_info(filename):
         
     try:
         doc = fitz.open(pdf_path)
+        pages = []
+        for page in doc:
+            pages.append({
+                "width": page.rect.width,
+                "height": page.rect.height
+            })
         info = {
             "page_count": len(doc),
-            "metadata": doc.metadata
+            "metadata": doc.metadata,
+            "pages": pages
         }
         doc.close()
         return jsonify(info)
@@ -524,6 +531,18 @@ def get_page_image(filename, page_num):
     pdf_path = get_pdf_path(filename)
     if not pdf_path or not os.path.exists(pdf_path):
         abort(404, description="File not found")
+        
+    try:
+        # Option B: Check if the client disconnected (aborted the fetch) before doing heavy PDF rendering
+        import select
+        sock = request.environ.get('werkzeug.socket')
+        if sock:
+            # If the socket is readable on a GET request, it almost certainly means EOF (client disconnected)
+            r, _, _ = select.select([sock], [], [], 0.0)
+            if r:
+                return "Client Disconnected", 499
+    except Exception:
+        pass
         
     try:
         # Open the document locally to avoid thread locks, allowing massive concurrent tile generation

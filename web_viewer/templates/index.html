@@ -633,7 +633,7 @@
         let appScript = '/static/js/app.js?v=91';
         if (currentRenderer === 'pdfjs') appScript = '/static/js/app_pdfjs.js?v=29';
         else if (currentRenderer === 'wasm') appScript = '/static/js/wasm_engine/app_wasm.js?v=1';
-        else if (currentRenderer === 'hybrid2') appScript = '/static/js/hybrid2/app_hybrid2.js?v=15';
+        else if (currentRenderer === 'hybrid2') appScript = '/static/js/hybrid2/app_hybrid2.js?v=28';
 
         // Hybrid 2 also needs canvas_vector_renderer for hit-testing
         if (currentRenderer === 'hybrid2') {
@@ -724,11 +724,6 @@
 
     <div id="scanner-log-panel" class="scanner-log-panel floating-log-panel" style="display: none;">
         <div class="scanner-log-header">
-            <div class="scanner-log-dots">
-                <span class="dot dot-red"></span>
-                <span class="dot dot-yellow"></span>
-                <span class="dot dot-green"></span>
-            </div>
             <span class="scanner-log-title">Console Output</span>
             <button id="btn-close-scanner-log" style="margin-left: auto; background: none; border: none; color: #94a3b8; cursor: pointer; font-size: 14px; padding: 0 4px;">✕</button>
         </div>

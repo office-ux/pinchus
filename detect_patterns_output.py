@@ -296,9 +296,17 @@ def save_pattern_pdf(pdf_path, detected_patterns, cfg, output_path=None, overwri
     target_types = get_target_types_map(pdf_path)
 
     xref_overrides = []
+    
+    page_counts = defaultdict(lambda: {"new": 0, "skipped": 0})
 
     for page_num in sorted(patterns_by_page.keys()):
         page = doc[page_num - 1]
+
+        # Collect existing annotation rects to prevent duplicates
+        existing_annot_rects = []
+        if page.first_annot:
+            for annot in page.annots():
+                existing_annot_rects.append(annot.rect)
 
         # Skip drawing individual lines/rects, only create the stamp annotations below
 
@@ -316,6 +324,23 @@ def save_pattern_pdf(pdf_path, detected_patterns, cfg, output_path=None, overwri
             tag_h  = max(raw_h * tag_scale, 20.0)
 
             tag_rect = fitz.Rect(cx - tag_w/2, cy - tag_h/2, cx + tag_w/2, cy + tag_h/2)
+
+            # Check if this stamp significantly overlaps with any existing annotation
+            is_duplicate = False
+            for exist_rect in existing_annot_rects:
+                intersect = fitz.Rect(tag_rect).intersect(exist_rect)
+                if intersect.is_valid and intersect.get_area() > (tag_rect.get_area() * 0.4):
+                    is_duplicate = True
+                    break
+            
+            if is_duplicate:
+                print(f"  Skipping duplicate stamp for Pattern #{i} at ({cx:.1f}, {cy:.1f}) Page {page_num}")
+                page_counts[page_num]["skipped"] += 1
+                continue
+
+            # Add this new stamp to existing rects so we don't duplicate within the same run
+            existing_annot_rects.append(tag_rect)
+            page_counts[page_num]["new"] += 1
 
             # Determine subject based on parent type
             target_name = pattern["target"]
@@ -365,13 +390,11 @@ def save_pattern_pdf(pdf_path, detected_patterns, cfg, output_path=None, overwri
                 doc.xref_set_key(link_xref, "OC", f"{hyperlinks_ocg} 0 R")
             print(f"  Pattern #{i}: {pattern['target']} (angle {pattern['angle']}) Page {page_num}")
 
-    page_counts = defaultdict(int)
-    for p in detected_patterns:
-        page_counts[p["page"]] += 1
-
     print(subject_items.color_text("\nSummary by Page:", subject_items.Ansi.BOLD))
     for page_num in sorted(page_counts.keys()):
-        print(f"  Page {page_num}: {page_counts[page_num]} patterns")
+        counts = page_counts[page_num]
+        total = counts["new"] + counts["skipped"]
+        print(f"  Page {page_num}: {total} patterns ({counts['new']} new stamps, {counts['skipped']} existing skipped)")
 
     if overwrite_input:
         doc.saveIncr()
